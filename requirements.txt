@@ -1,0 +1,11 @@
+--extra-index-url https://download.pytorch.org/whl/cu128
+pandas 
+numpy 
+yfinance 
+pytorch-forecasting 
+pytorch-lightning 
+torch 
+streamlit
+PyYAML
+optuna
+plotly

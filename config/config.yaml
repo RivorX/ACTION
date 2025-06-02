@@ -1,0 +1,51 @@
+# Data settings
+data:
+  tickers:
+    - 'CDR.WA'    # CD Projekt (Polska)
+    - 'PKO.WA'    # PKO BP (Polska)
+    - 'AAPL'      # Apple (USA)
+    - 'MSFT'      # Microsoft (USA)
+    - 'TSLA'      # Tesla (USA)
+    - 'GOOGL'     # Alphabet (USA)
+    - 'AMZN'      # Amazon (USA)
+    - 'BMW.DE'    # BMW (Niemcy)
+    - 'SIE.DE'    # Siemens (Niemcy)
+    - 'SAN.PA'    # Sanofi (Francja)
+    - 'TTE.PA'    # TotalEnergies (Francja)
+    - 'BP.L'      # BP (Wielka Brytania)
+    - 'HSBA.L'    # HSBC (Wielka Brytania)
+    - '7203.T'    # Toyota (Japonia)
+    - '9984.T'    # SoftBank (Japonia)
+    - '005930.KS' # Samsung (Korea Południowa)
+    - '2330.TW'   # TSMC (Tajwan)
+    - 'BABA'      # Alibaba (Chiny)
+    - 'JD'        # JD.com (Chiny)
+    - 'INFY.NS'   # Infosys (Indie)
+    - 'RELIANCE.NS' # Reliance Industries (Indie)
+  years: 5
+  raw_data_path: 'data/stock_data.csv'
+  processed_data_path: 'data/processed_dataset'
+
+# Model settings
+model:
+  max_prediction_length: 60  # 1 day to 2 months
+  min_encoder_length: 100
+  hidden_size: 128
+  attention_head_size: 8
+  dropout: 0.2
+  learning_rate: 0.01
+  lstm_layers: 3
+  loss: QuantileLoss  # Używamy QuantileLoss
+  use_quantile_loss: true  # Włącz QuantileLoss
+  quantiles: [0.1, 0.5, 0.9]  # Kwantyle dla predykcji (dolny, mediana, górny)
+
+# Training settings
+training:
+  max_epochs: 50
+  batch_size: 32
+  early_stopping_patience: 8
+  optuna_trials: 10  # Number of trials for hyperparameter optimization
+
+# Paths
+paths:
+  model_save_path: 'models/trained_tft_model'

@@ -1,0 +1,5 @@
+Trening:
+python main.py
+
+Aplikacja:
+streamlit run app.py
