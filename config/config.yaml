@@ -22,7 +22,7 @@ data:
     - 'JD'        # JD.com (Chiny)
     - 'INFY.NS'   # Infosys (Indie)
     - 'RELIANCE.NS' # Reliance Industries (Indie)
-  years: 5
+  years: 3
   raw_data_path: 'data/stock_data.csv'
   processed_data_path: 'data/processed_dataset'
 
@@ -39,13 +39,23 @@ model:
   use_quantile_loss: true  # Włącz QuantileLoss
   quantiles: [0.1, 0.5, 0.9]  # Kwantyle dla predykcji (dolny, mediana, górny)
 
+  min_hidden_size: 64    # Minimalna wielkość warstwy ukrytej dla Optuna
+  max_hidden_size: 128   # Maksymalna wielkość warstwy ukrytej dla Optuna
+  min_lstm_layers: 3      # Minimalna liczba warstw LSTM dla Optuna
+  max_lstm_layers: 5      # Maksymalna liczba warstw LSTM dla Optuna
+  min_attention_head_size: 4  # Minimalna liczba głów uwagi dla Optuna
+  max_attention_head_size: 8  # Maksymalna liczba głów uwagi dla Optuna
+
 # Training settings
 training:
   max_epochs: 50
   batch_size: 32
   early_stopping_patience: 8
   optuna_trials: 10  # Number of trials for hyperparameter optimization
+  reduce_lr_patience: 4  # Cierpliwość dla redukcji learning rate
+  reduce_lr_factor: 0.5  # Współczynnik redukcji learning rate
 
 # Paths
 paths:
-  model_save_path: 'models/trained_tft_model'
+  checkpoint_path: 'models/best_tft_checkpoint.pth'  # Ścieżka do najlepszego checkpointu
+  model_save_path: 'models/full_model.pth'  # Ścieżka do zapisu całego modelu

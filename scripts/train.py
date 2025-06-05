@@ -3,17 +3,44 @@ import pytorch_forecasting
 from pytorch_forecasting.data import TimeSeriesDataSet
 from .model import build_model
 from pytorch_lightning import Trainer
-from pytorch_lightning.callbacks import EarlyStopping
+from pytorch_lightning.callbacks import EarlyStopping, Callback
 from pytorch_lightning.loggers import CSVLogger
 import optuna
 import yaml
 import pandas as pd
 import numpy as np
 import logging
+import os
 
 # Konfiguracja logowania
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+class CustomModelCheckpoint(Callback):
+    def __init__(self, monitor, save_path, mode="min"):
+        super().__init__()
+        self.monitor = monitor
+        self.save_path = save_path
+        self.mode = mode
+        self.best_score = float("inf") if mode == "min" else float("-inf")
+
+    def on_validation_end(self, trainer, pl_module):
+        current_score = trainer.callback_metrics.get(self.monitor)
+        if current_score is None:
+            return
+        if (self.mode == "min" and current_score < self.best_score) or (self.mode == "max" and current_score > self.best_score):
+            self.best_score = current_score
+            logger.info(f"Zapisywanie checkpointu z {self.monitor}={current_score} w {self.save_path}")
+            # Zapisz state_dict i hiperparametry
+            hyperparams = dict(pl_module.hparams)
+            # Serializuj loss jako string
+            if 'loss' in hyperparams:
+                hyperparams['loss'] = str(hyperparams['loss'])
+            checkpoint = {
+                "state_dict": pl_module.state_dict(),
+                "hyperparams": hyperparams
+            }
+            torch.save(checkpoint, self.save_path)
 
 def objective(trial, train_dataset, val_dataset, config):
     model = build_model(train_dataset, config, trial)
@@ -21,11 +48,13 @@ def objective(trial, train_dataset, val_dataset, config):
         max_epochs=config['training']['max_epochs'],
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
         devices=1,
-        callbacks=[EarlyStopping(monitor="val_loss", patience=config['training']['early_stopping_patience'])],
+        callbacks=[
+            EarlyStopping(monitor="val_loss", patience=config['training']['early_stopping_patience']),
+            CustomModelCheckpoint(monitor="val_loss", save_path=config['paths']['checkpoint_path'], mode="min")
+        ],
         enable_progress_bar=True,
         logger=CSVLogger(save_dir="logs/")
     )
-    # Debugowanie: Sprawdź urządzenia batchy w dataloaderze
     val_dataloader = val_dataset.to_dataloader(
         train=False, batch_size=config['training']['batch_size'], num_workers=4, persistent_workers=True
     )
@@ -34,7 +63,7 @@ def objective(trial, train_dataset, val_dataset, config):
         for key, val in x.items():
             if isinstance(val, torch.Tensor):
                 logger.info(f"Validation batch tensor {key} device: {val.device}")
-        break  # Sprawdź tylko pierwszy batch
+        break
     trainer.fit(
         model,
         train_dataloaders=train_dataset.to_dataloader(
@@ -45,30 +74,24 @@ def objective(trial, train_dataset, val_dataset, config):
     return trainer.callback_metrics["val_loss"].item()
 
 def train_model(dataset, config):
-    # Pobierz oryginalne dane z datasetu i przekształć tensory na numpy
-    reals = dataset.data['reals'].detach().clone().cpu().numpy()  # Przenieś na CPU dla preprocessing
+    reals = dataset.data['reals'].detach().clone().cpu().numpy()
     groups = dataset.data['groups'].detach().clone().cpu().numpy()
     time_idx = dataset.data['time'].detach().clone().cpu().numpy()
 
-    # Spłaszcz groups do 1D, jeśli ma więcej wymiarów
     if groups.ndim > 1:
         groups = groups.squeeze()
         if groups.ndim > 1:
             groups = groups.flatten()
 
-    # Przekształć groups i time_idx na 2D, aby pasowały do reals
     groups = np.expand_dims(groups, axis=1)
     time_idx = np.expand_dims(time_idx, axis=1)
 
-    # Filtruj kolumny reals, aby wykluczyć time_idx i encoder_length
     expected_reals = ["Open", "High", "Low", "Volume", "MA10", "MA50", "RSI", "Volatility", "Close"]
     real_columns = [col for col in dataset.reals if col in expected_reals]
     columns = real_columns + ['group_id', 'time_idx']
 
-    # Debugowanie: Wyświetl dataset.reals
     print("dataset.reals:", dataset.reals)
 
-    # Przywróć oryginalny format danych jako DataFrame
     df = pd.DataFrame(
         np.concatenate([reals[:, :len(real_columns)], groups, time_idx], axis=1),
         columns=columns
@@ -76,17 +99,14 @@ def train_model(dataset, config):
     df['group_id'] = df['group_id'].astype(str)
     df['time_idx'] = df['time_idx'].astype(int)
 
-    # Sprawdź, czy DataFrame nie jest pusty
     if df.empty:
         raise ValueError("DataFrame jest pusty. Sprawdź dane wejściowe lub preprocessing.")
 
-    # Debugowanie: Wyświetl informacje o DataFrame
     print("DataFrame info:", df.info())
     print("Kolumny DataFrame:", df.columns.tolist())
     print("time_idx unikalne wartości:", df['time_idx'].unique())
     print("time_idx statystyki:", df['time_idx'].describe())
 
-    # Podział na zbiór treningowy i walidacyjny (80% trening, 20% walidacja)
     max_time_idx = df['time_idx'].max()
     if pd.isna(max_time_idx) or not np.isfinite(max_time_idx):
         raise ValueError("max_time_idx jest NaN lub nieokreślony. Sprawdź kolumnę time_idx.")
@@ -97,29 +117,48 @@ def train_model(dataset, config):
     train_df = df[df['time_idx'] <= split_idx]
     val_df = df[df['time_idx'] > split_idx]
 
-    # Sprawdź, czy zbiory treningowy i walidacyjny nie są puste
     if train_df.empty or val_df.empty:
         raise ValueError(f"Zbiór treningowy (rozmiar: {len(train_df)}) lub walidacyjny (rozmiar: {len(val_df)}) jest pusty. Sprawdź podział danych.")
 
-    # Stwórz nowe TimeSeriesDataSet dla treningu i walidacji
     train_dataset = TimeSeriesDataSet.from_parameters(dataset.get_parameters(), train_df)
     val_dataset = TimeSeriesDataSet.from_parameters(dataset.get_parameters(), val_df)
 
-    # Optymalizacja hiperparametrów z Optuna
     study = optuna.create_study(direction="minimize")
     study.optimize(lambda trial: objective(trial, train_dataset, val_dataset, config), n_trials=config['training']['optuna_trials'])
 
-    # Trenuj finalny model z najlepszymi parametrami
     best_params = study.best_params
     print(f"Najlepsze parametry: {best_params}")
-    final_model = build_model(dataset, config)
-    final_model.hparams.update(best_params)
+    final_model = build_model(dataset, config, hyperparams=best_params)
+
+    checkpoint_path = config['paths']['checkpoint_path']
+    if os.path.exists(checkpoint_path):
+        print(f"Wczytywanie checkpointu z {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location=torch.device('cpu'), weights_only=False)
+        hyperparams = checkpoint["hyperparams"]
+        # Przywróć obiekt straty
+        if 'loss' in hyperparams and isinstance(hyperparams['loss'], str):
+            if 'QuantileLoss' in hyperparams['loss']:
+                hyperparams['loss'] = pytorch_forecasting.metrics.QuantileLoss(quantiles=config['model'].get('quantiles', [0.1, 0.5, 0.9]))
+            else:
+                hyperparams['loss'] = pytorch_forecasting.metrics.MAE()
+        final_model = build_model(dataset, config, hyperparams=hyperparams)
+        try:
+            final_model.load_state_dict(checkpoint["state_dict"])
+        except RuntimeError as e:
+            logger.error(f"Błąd wczytywania state_dict: {e}")
+            raise
+        final_model.to('cuda' if torch.cuda.is_available() else 'cpu')
+    else:
+        print("Brak checkpointu, trenowanie od zera")
 
     trainer = Trainer(
         max_epochs=config['training']['max_epochs'],
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
         devices=1,
-        callbacks=[EarlyStopping(monitor="val_loss", patience=config['training']['early_stopping_patience'])],
+        callbacks=[
+            EarlyStopping(monitor="val_loss", patience=config['training']['early_stopping_patience']),
+            CustomModelCheckpoint(monitor="val_loss", save_path=config['paths']['checkpoint_path'], mode="min")
+        ],
         enable_progress_bar=True,
         logger=CSVLogger(save_dir="logs/")
     )
@@ -132,11 +171,18 @@ def train_model(dataset, config):
             train=False, batch_size=config['training']['batch_size'], num_workers=4, persistent_workers=True
         )
     )
-    final_model.save(config['paths']['model_save_path'])
+    # Zapisz cały model jako state_dict z hiperparametrami
+    checkpoint = {
+        "state_dict": final_model.state_dict(),
+        "hyperparams": dict(final_model.hparams)
+    }
+    if 'loss' in checkpoint['hyperparams']:
+        checkpoint['hyperparams']['loss'] = str(checkpoint['hyperparams']['loss'])
+    torch.save(checkpoint, config['paths']['model_save_path'])
     return final_model
 
 if __name__ == "__main__":
     with open('config/config.yaml', 'r') as f:
         config = yaml.safe_load(f)
-    dataset = TimeSeriesDataSet.load(config['data']['processed_data_path'])
+    dataset = torch.load(config['data']['processed_data_path'], weights_only=False)
     train_model(dataset, config)

@@ -1,5 +1,8 @@
-Trening:
-python main.py
+Trening od 0:
+    python main.py
+
+Doszkalanie modelu:
+    python main.py --fine-tune
 
 Aplikacja:
 streamlit run app.py
