@@ -83,6 +83,11 @@ class CustomTemporalFusionTransformer(LightningModule):
         loss = self.model.loss(y_hat, y_target)
         batch_size = x['encoder_cont'].size(0)
         self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=batch_size)
+        
+        # Logowanie co 100 batchy
+        if batch_idx % 100 == 0:
+            logger.info(f"Training batch {batch_idx}: y_hat[0, :5] = {y_hat[0, :5].tolist()}, y_target[0, :5] = {y_target[0, :5].tolist()}")
+        
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -93,6 +98,10 @@ class CustomTemporalFusionTransformer(LightningModule):
         loss = self.model.loss(y_hat, y_target)
         batch_size = x['encoder_cont'].size(0)
         self.log("val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=batch_size)
+        
+        # Logowanie dla każdego batchu walidacyjnego
+        logger.info(f"Validation batch {batch_idx}: y_hat[0, :5] = {y_hat[0, :5].tolist()}, y_target[0, :5] = {y_target[0, :5].tolist()}")
+        
         return loss
 
     def configure_optimizers(self):

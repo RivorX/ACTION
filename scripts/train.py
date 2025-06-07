@@ -104,7 +104,6 @@ def train_model(dataset, config):
 
     print("DataFrame info:", df.info())
     print("Kolumny DataFrame:", df.columns.tolist())
-    print("time_idx unikalne wartości:", df['time_idx'].unique())
     print("time_idx statystyki:", df['time_idx'].describe())
 
     max_time_idx = df['time_idx'].max()

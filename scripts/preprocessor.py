@@ -21,25 +21,14 @@ def compute_rsi(prices, period=14):
     return 100 - (100 / (1 + rs))
 
 def create_dataset(df, config):
-    # Konwersja kolumny Date na datetime z ujednoliconą strefą czasową (UTC)
     df['Date'] = pd.to_datetime(df['Date'], utc=True)
-    
-    # Obliczanie time_idx na podstawie różnicy dni i rzutowanie na int
     df['time_idx'] = (df['Date'] - df['Date'].min()).dt.days.astype(int)
-    
     df['group_id'] = df['Ticker']
-
-    # Debugowanie: Wyświetl kolumny przed utworzeniem datasetu
-    print("Kolumny df przed utworzeniem datasetu:", df)
     
-    # Upewnij się, że df nie zawiera encoder_length
-    if 'encoder_length' in df.columns:
-        df = df.drop(columns=['encoder_length'])
-        print("Usunięto kolumnę encoder_length z df")
-
-    # Tworzenie normalizatora
+    # Transformacja logarytmiczna
+    df['Close'] = np.log1p(df['Close'])  # log1p(x) = log(1 + x)
+    
     normalizer = TorchNormalizer()
-
     dataset = TimeSeriesDataSet(
         df,
         time_idx="time_idx",
@@ -54,7 +43,7 @@ def create_dataset(df, config):
         allow_missing_timesteps=True,
         add_encoder_length=False
     )
-
+    
     # Debugowanie: Wyświetl dataset.reals
     print("dataset.reals po uzyskaniu:", dataset.reals)
 

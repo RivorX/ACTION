@@ -15,6 +15,10 @@ from datetime import datetime, timedelta
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# Wyświetlanie w konsoli
+def print_to_console(message):
+    print(message)
+
 # Weryfikacja wersji bibliotek
 required_versions = {
     'numpy': '2.2.6',
@@ -122,6 +126,9 @@ if st.button("Generuj predykcje"):
     
     # Przygotuj dataset dla predykcji
     try:
+        # Transformacja logarytmiczna do danych predykcyjnych
+        ticker_data['Close'] = np.log1p(ticker_data['Close'])  # log1p(x) = log(1 + x)
+        
         ticker_dataset = TimeSeriesDataSet.from_parameters(
             dataset.get_parameters(),
             ticker_data,
@@ -137,7 +144,7 @@ if st.button("Generuj predykcje"):
     # Wykonaj predykcję
     try:
         with torch.no_grad():
-            predictions = model.predict(ticker_dataset, return_x=True)
+            predictions = model.predict(ticker_dataset, mode="quantiles", return_x=True)
         logger.info("Predykcja wykonana poprawnie.")
         logger.info(f"Kształt predictions.output: {predictions.output.shape}")
     except Exception as e:
@@ -148,33 +155,35 @@ if st.button("Generuj predykcje"):
     # Konwertuj predykcje na numpy i odnormalizuj
     pred_array = predictions.output
     logger.info(f"Kształt pred_array przed odnormalizacją: {pred_array.shape}")
-    
+    print_to_console(f"Surowe predykcje (pierwsze 5 wartości dla mediany): {pred_array[0, :5, 1].tolist()}")
+
     # Pobierz normalizer z datasetu i odnormalizuj
     target_normalizer = dataset.target_normalizer
     if target_normalizer is None:
         logger.warning("Normalizator nie jest dostępny. Próbuję odnormalizować ręcznie.")
-        pred_array = pred_array.cpu().numpy()  # Konwersja do numpy po odnormalizacji
-        last_close = ticker_data['Close'].iloc[-1]
-        pred_array = pred_array * ticker_data['Close'].std() + ticker_data['Close'].mean()
-        median = pred_array[0, :] if len(pred_array.shape) == 2 else pred_array[0, :, pred_array.shape[2] // 2]
-        lower_bound = median * 0.9
-        upper_bound = median * 1.1
+        pred_array = pred_array.cpu().numpy()
+        mean_close = np.log1p(ticker_data['Close']).mean()
+        std_close = np.log1p(ticker_data['Close']).std()
+        pred_array = pred_array * std_close + mean_close
+        pred_array = np.expm1(pred_array)  # Odwrócenie log1p
+        logger.info(f"Ręczna odnormalizacja: mean={mean_close}, std={std_close}")
     else:
         try:
-            # Ensure normalizer parameters are on CPU
-            if hasattr(target_normalizer, 'get_parameters'):
-                norm_params = target_normalizer.get_parameters()
-                if isinstance(norm_params, torch.Tensor):
-                    norm_params = norm_params.to('cpu')
-                    target_normalizer.parameters = norm_params  # Update normalizer parameters
-            pred_array = pred_array.to('cpu')  # Ensure pred_array is on CPU
-            pred_array = target_normalizer.inverse_transform(pred_array)  # Przekazujemy tensor
-            pred_array = pred_array.cpu().numpy()  # Konwersja do numpy po odnormalizacji
-            if len(pred_array.shape) == 3:  # Kształt (batch_size, time_steps, quantiles)
-                median = pred_array[0, :, pred_array.shape[2] // 2]
-                lower_bound = pred_array[0, :, 0]
-                upper_bound = pred_array[0, :, -1]
-            elif len(pred_array.shape) == 2:  # Kształt (batch_size, time_steps)
+            # Upewnij się, że pred_array jest na CPU
+            pred_array = pred_array.to('cpu')
+            # Debugowanie parametrów normalizatora
+            norm_params = target_normalizer.get_parameters()
+            logger.info(f"Parametry normalizatora: {norm_params}")
+            # Odnormalizuj jako tensor
+            pred_array = target_normalizer.inverse_transform(pred_array)
+            # Odwrócenie transformacji logarytmicznej
+            pred_array = np.expm1(pred_array.numpy())  # expm1(x) = exp(x) - 1
+            if len(pred_array.shape) == 3:  # (batch_size, time_steps, quantiles)
+                median = pred_array[0, :, 1]  # Środkowy kwantyl (0.5)
+                lower_bound = pred_array[0, :, 0]  # Dolny kwantyl (0.1)
+                upper_bound = pred_array[0, :, 2]  # Górny kwantyl (0.9)
+            elif len(pred_array.shape) == 2:  # (batch_size, time_steps)
+                logger.warning("Model nie zwrócił kwantyli. Używam przybliżonych granic.")
                 median = pred_array[0, :]
                 lower_bound = median * 0.9
                 upper_bound = median * 1.1
@@ -188,12 +197,14 @@ if st.button("Generuj predykcje"):
             raise
 
     logger.info(f"Kształt pred_array po odnormalizacji: {pred_array.shape}")
+    logger.info(f"Przykładowe wartości predykcji: median[0]={median[0]}, lower_bound[0]={lower_bound[0]}, upper_bound[0]={upper_bound[0]}")
+    print_to_console(f"Wartości po odnormalizacji (pierwsze 5 wartości dla mediany): {median[:5].tolist()}")
 
     # Przygotuj dane do wykresu
     last_date = ticker_data['Date'].iloc[-1]
     pred_dates = [last_date + timedelta(days=i) for i in range(1, config['model']['max_prediction_length'] + 1)]
     historical_dates = ticker_data['Date'].tolist()
-    historical_close = ticker_data['Close'].tolist()
+    historical_close = np.expm1(ticker_data['Close']).tolist()  # Odwrócenie log1p dla danych historycznych
     
     # Połącz dane historyczne i predykcje
     all_dates = historical_dates + pred_dates
