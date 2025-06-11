@@ -4,6 +4,9 @@ from scripts.data_fetcher import fetch_global_stocks
 from scripts.preprocessor import preprocess_data
 from scripts.train import train_model
 
+# Przełącznik do włączania/wyłączania optymalizacji hiperparametrów z Optuna
+optime = False  # Ustaw na True, False, aby pominąć Optuna i użyć domyślnych hiperparametrów
+
 def create_directories():
     directories = ['data', 'models', 'config']
     for directory in directories:
@@ -27,7 +30,7 @@ def main_pipeline():
 
     # Step 3: Train model
     print("Training model...")
-    train_model(dataset, config)
+    train_model(dataset, config, use_optuna=optime)
 
     print("Pipeline completed. Run `streamlit run app.py` to launch the app.")
 

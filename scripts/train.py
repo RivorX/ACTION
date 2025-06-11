@@ -73,7 +73,7 @@ def objective(trial, train_dataset, val_dataset, config):
     )
     return trainer.callback_metrics["val_loss"].item()
 
-def train_model(dataset, config):
+def train_model(dataset, config, use_optuna=True):
     reals = dataset.data['reals'].detach().clone().cpu().numpy()
     groups = dataset.data['groups'].detach().clone().cpu().numpy()
     time_idx = dataset.data['time'].detach().clone().cpu().numpy()
@@ -122,11 +122,15 @@ def train_model(dataset, config):
     train_dataset = TimeSeriesDataSet.from_parameters(dataset.get_parameters(), train_df)
     val_dataset = TimeSeriesDataSet.from_parameters(dataset.get_parameters(), val_df)
 
-    study = optuna.create_study(direction="minimize")
-    study.optimize(lambda trial: objective(trial, train_dataset, val_dataset, config), n_trials=config['training']['optuna_trials'])
+    if use_optuna:
+        study = optuna.create_study(direction="minimize")
+        study.optimize(lambda trial: objective(trial, train_dataset, val_dataset, config), n_trials=config['training']['optuna_trials'])
+        best_params = study.best_params
+        print(f"Najlepsze parametry: {best_params}")
+    else:
+        best_params = None
+        print("Pomijanie optymalizacji Optuna, używanie domyślnych hiperparametrów.")
 
-    best_params = study.best_params
-    print(f"Najlepsze parametry: {best_params}")
     final_model = build_model(dataset, config, hyperparams=best_params)
 
     checkpoint_path = config['paths']['checkpoint_path']
@@ -134,7 +138,6 @@ def train_model(dataset, config):
         print(f"Wczytywanie checkpointu z {checkpoint_path}")
         checkpoint = torch.load(checkpoint_path, map_location=torch.device('cpu'), weights_only=False)
         hyperparams = checkpoint["hyperparams"]
-        # Przywróć obiekt straty
         if 'loss' in hyperparams and isinstance(hyperparams['loss'], str):
             if 'QuantileLoss' in hyperparams['loss']:
                 hyperparams['loss'] = pytorch_forecasting.metrics.QuantileLoss(quantiles=config['model'].get('quantiles', [0.1, 0.5, 0.9]))
@@ -184,4 +187,4 @@ if __name__ == "__main__":
     with open('config/config.yaml', 'r') as f:
         config = yaml.safe_load(f)
     dataset = torch.load(config['data']['processed_data_path'], weights_only=False)
-    train_model(dataset, config)
+    train_model(dataset, config, use_optuna=True)

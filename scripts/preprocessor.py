@@ -21,12 +21,22 @@ def compute_rsi(prices, period=14):
     return 100 - (100 / (1 + rs))
 
 def create_dataset(df, config):
+    if df.empty:
+        raise ValueError("DataFrame jest pusty. Sprawdź dane wejściowe.")
+    
+    # Czyszczenie danych
+    df = df.dropna(subset=['Close'])  # Usuń wiersze z brakującymi wartościami w Close
+    if (df['Close'] <= 0).any():
+        print("Znaleziono ujemne wartości w Close. Zamieniam na NaN i usuwam.")
+        df.loc[df['Close'] <= 0, 'Close'] = np.nan
+        df = df.dropna(subset=['Close'])
+    
     df['Date'] = pd.to_datetime(df['Date'], utc=True)
     df['time_idx'] = (df['Date'] - df['Date'].min()).dt.days.astype(int)
     df['group_id'] = df['Ticker']
     
-    # Transformacja logarytmiczna
-    df['Close'] = np.log1p(df['Close'])  # log1p(x) = log(1 + x)
+    # Transformacja logarytmiczna tylko dla dodatnich wartości
+    df['Close'] = np.log1p(df['Close'].clip(lower=0))  # Clip usuwa ujemne wartości
     
     normalizer = TorchNormalizer()
     dataset = TimeSeriesDataSet(
@@ -44,9 +54,7 @@ def create_dataset(df, config):
         add_encoder_length=False
     )
     
-    # Debugowanie: Wyświetl dataset.reals
     print("dataset.reals po uzyskaniu:", dataset.reals)
-
     dataset.save(config['data']['processed_data_path'])
     return dataset
 
