@@ -107,7 +107,7 @@ class CustomTemporalFusionTransformer(LightningModule):
 
     def configure_optimizers(self):
         learning_rate = self.hparams.get('learning_rate', self.config['model']['learning_rate'])
-        optimizer = torch.optim.Adam(self.parameters(), lr=learning_rate)
+        optimizer = torch.optim.AdamW(self.parameters(), lr=learning_rate, weight_decay=0.01)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer,
             patience=self.config['training']['reduce_lr_patience'],

@@ -45,7 +45,7 @@ model:
   attention_head_size: 8
   dropout: 0.3
   learning_rate: 0.001
-  lstm_layers: 4
+  lstm_layers: 5
   loss: QuantileLoss
   use_quantile_loss: true
   quantiles: [0.1, 0.5, 0.9]
@@ -59,7 +59,7 @@ model:
 # Training settings
 training:
   max_epochs: 100
-  batch_size: 32
+  batch_size: 48
   early_stopping_patience: 10
   optuna_trials: 30
   reduce_lr_patience: 5
