@@ -16,7 +16,7 @@ data:
     - 'HSBA.L'    # HSBC (Wielka Brytania, bankowość)
     - '7203.T'    # Toyota (Japonia, motoryzacja)
     - '9984.T'    # SoftBank (Japonia, technologia)
-    - '005930.KS' # Samsung (Korea Południowa, technologia)
+    - '005930.KS' # Samsung (Korea Południowa, technologia, zmieniono z SSNLF)
     - '2330.TW'   # TSMC (Tajwan, półprzewodniki)
     - 'BABA'      # Alibaba (Chiny, e-commerce)
     - 'JD'        # JD.com (Chiny, e-commerce)
@@ -30,46 +30,42 @@ data:
     - 'RNO.PA'    # Renault (Francja, motoryzacja)
     - 'NG.L'      # National Grid (Wielka Brytania, energia)
     - 'TM'        # Toyota (USA, motoryzacja)
-    - 'SNE'       # Sony (Japonia, technologia)
-    - 'SSNLF'     # Samsung (USA, technologia)
+    - 'SONY'      # Sony (Japonia, technologia)
     - 'TCTZF'     # Tencent (Chiny, technologia)
     - 'HDB'       # HDFC Bank (Indie, bankowość)
-  years: 5
+  years: 3
   raw_data_path: 'data/stock_data.csv'
   processed_data_path: 'data/processed_dataset'
 
 # Model settings
 model:
-  max_prediction_length: 60  # 1 day to 2 months, bez zmian
-  min_encoder_length: 150    # Zmniejszono z 200, by zmniejszyć wymagania danych historycznych
-  hidden_size: 128          # Zmniejszono z 256 dla mniejszego obciążenia
-  attention_head_size: 8    # Zmniejszono z 12 dla mniejszej złożoności uwagi
-  dropout: 0.3              # Pozostawiono 0.3, by zapobiec przeuczeniu
-  learning_rate: 0.001      # Pozostawiono 0.001 dla stabilności treningu
-  lstm_layers: 4            # Zmniejszono z 5, ale wciąż więcej niż 3 dla głębi
-  loss: QuantileLoss        # Używamy QuantileLoss
-  use_quantile_loss: true   # Włącz QuantileLoss
-  quantiles: [0.1, 0.5, 0.9]  # Kwantyle dla predykcji (dolny, mediana, górny)
-
-
-  # Optuma hyperparameter optimization settings
-  min_hidden_size: 64       # Pozostawiono 64
-  max_hidden_size: 256      # Zmniejszono z 512
-  min_lstm_layers: 3        # Bez zmian
-  max_lstm_layers: 5        # Zmniejszono z 6
-  min_attention_head_size: 4 # Bez zmian
-  max_attention_head_size: 12 # Zmniejszono z 16
+  max_prediction_length: 60
+  min_encoder_length: 150
+  hidden_size: 128
+  attention_head_size: 8
+  dropout: 0.3
+  learning_rate: 0.001
+  lstm_layers: 4
+  loss: QuantileLoss
+  use_quantile_loss: true
+  quantiles: [0.1, 0.5, 0.9]
+  min_hidden_size: 64
+  max_hidden_size: 256
+  min_lstm_layers: 3
+  max_lstm_layers: 5
+  min_attention_head_size: 4
+  max_attention_head_size: 12
 
 # Training settings
 training:
-  max_epochs: 100           # Zwiększono z 50, by model miał więcej czasu na naukę
-  batch_size: 32           
-  early_stopping_patience: 10 # Zwiększono z 8 dla większej cierpliwości
-  optuna_trials: 30         # Zwiększono z 10 dla lepszej optymalizacji
-  reduce_lr_patience: 5     # Zwiększono z 4
-  reduce_lr_factor: 0.5     # Bez zmian
+  max_epochs: 100
+  batch_size: 32
+  early_stopping_patience: 10
+  optuna_trials: 30
+  reduce_lr_patience: 5
+  reduce_lr_factor: 0.5
 
 # Paths
 paths:
-  checkpoint_path: 'models/best_tft_checkpoint.pth'  # Ścieżka do najlepszego checkpointu
-  model_save_path: 'models/full_model.pth'  # Ścieżka do zapisu całego modelu
+  checkpoint_path: 'models/best_tft_checkpoint.pth'
+  model_save_path: 'models/full_model.pth'

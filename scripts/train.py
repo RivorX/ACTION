@@ -48,6 +48,7 @@ def objective(trial, train_dataset, val_dataset, config):
         max_epochs=config['training']['max_epochs'],
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
         devices=1,
+        precision="bf16-mixed" if torch.cuda.is_available() else "32-true",
         callbacks=[
             EarlyStopping(monitor="val_loss", patience=config['training']['early_stopping_patience']),
             CustomModelCheckpoint(monitor="val_loss", save_path=config['paths']['checkpoint_path'], mode="min")
@@ -157,6 +158,7 @@ def train_model(dataset, config, use_optuna=True):
         max_epochs=config['training']['max_epochs'],
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
         devices=1,
+        precision="bf16-mixed" if torch.cuda.is_available() else "32-true",
         callbacks=[
             EarlyStopping(monitor="val_loss", patience=config['training']['early_stopping_patience']),
             CustomModelCheckpoint(monitor="val_loss", save_path=config['paths']['checkpoint_path'], mode="min")

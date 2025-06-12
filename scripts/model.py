@@ -28,8 +28,8 @@ def move_to_device(obj, device):
 class CustomTemporalFusionTransformer(LightningModule):
     def __init__(self, dataset, config, hyperparams=None):
         super().__init__()
-        # Zapisz hiperparametry, ignorując dataset
-        self.save_hyperparameters(ignore=['dataset'])
+        # Zapisz hiperparametry, ignorując dataset oraz problematyczne klucze
+        self.save_hyperparameters(ignore=['dataset', 'loss'])
         self.config = config
         # Określ, czy używasz QuantileLoss
         use_quantile_loss = config['model'].get('use_quantile_loss', False)
@@ -79,8 +79,10 @@ class CustomTemporalFusionTransformer(LightningModule):
         x, y = batch
         x = move_to_device(x, self.device)
         y_target = move_to_device(y[0], self.device)
-        y_hat = self(x)
-        loss = self.model.loss(y_hat, y_target)
+        # Użyj AMP z bf16, jeśli dostępne
+        with torch.amp.autocast(device_type='cuda' if torch.cuda.is_available() else 'cpu', dtype=torch.bfloat16):
+            y_hat = self(x)
+            loss = self.model.loss(y_hat, y_target)
         batch_size = x['encoder_cont'].size(0)
         self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=batch_size)
         
@@ -90,8 +92,10 @@ class CustomTemporalFusionTransformer(LightningModule):
         x, y = batch
         x = move_to_device(x, self.device)
         y_target = move_to_device(y[0], self.device)
-        y_hat = self(x)
-        loss = self.model.loss(y_hat, y_target)
+        # Użyj AMP z bf16, jeśli dostępne
+        with torch.amp.autocast(device_type='cuda' if torch.cuda.is_available() else 'cpu', dtype=torch.bfloat16):
+            y_hat = self(x)
+            loss = self.model.loss(y_hat, y_target)
         batch_size = x['encoder_cont'].size(0)
         self.log("val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=batch_size)
         
@@ -148,7 +152,7 @@ def build_model(dataset, config, trial=None, hyperparams=None):
                 if key == "output_size":
                     filtered_hyperparams[key] = len(config['model'].get('quantiles', [0.1, 0.5, 0.9])) if config['model'].get('use_quantile_loss', False) else 1
                 elif key == "loss":
-                    filtered_hyperparams.get('loss', QuantileLoss(quantiles=config['model'].get('quantiles', [0.1, 0.5, 0.9])) if config['model'].get('use_quantile_loss', False) else MAE())
+                    filtered_hyperparams[key] = QuantileLoss(quantiles=config['model'].get('quantiles', [0.1, 0.5, 0.9])) if config['model'].get('use_quantile_loss', False) else MAE()
                 elif key == "log_interval":
                     filtered_hyperparams[key] = 10
                 elif key == "reduce_on_plateau_patience":
