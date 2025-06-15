@@ -1,8 +1,22 @@
 # Data settings
 data:
   tickers:
+  # Polska
     - 'CDR.WA'    # CD Projekt (Polska, gry)
+    - 'PLW.WA'      # PlayWay
+    - 'TEN.WA'      # 11 bit studios
+    - 'BLO.WA'      # Bloober Team
+    - 'CIG.WA'      # CI Games
     - 'PKO.WA'    # PKO BP (Polska, bankowość)
+    - 'PEO.WA'      # Bank Pekao
+    - 'ING.WA'      # ING Bank Śląski
+    - 'MBK.WA'      # mBank
+    - 'ALR.WA'      # Alior Bank
+    - 'PKN.WA'      # Orlen
+    - 'TPE.WA'      # Tauron
+    - 'ENA.WA'      # Enea
+    - 'PGE.WA'      # PGE
+    # Zagraniczne
     - 'AAPL'      # Apple (USA, technologia)
     - 'MSFT'      # Microsoft (USA, technologia)
     - 'TSLA'      # Tesla (USA, motoryzacja)
@@ -34,13 +48,14 @@ data:
     - 'TCTZF'     # Tencent (Chiny, technologia)
     - 'HDB'       # HDFC Bank (Indie, bankowość)
   years: 3
-  raw_data_path: 'data/stock_data.csv'
-  processed_data_path: 'data/processed_dataset'
+  raw_data_path: data/stock_data.csv
+  processed_data_path: data/processed_dataset.pt
+  normalizers_path: data/normalizers.pkl
 
 # Model settings
 model:
-  max_prediction_length: 60
-  min_encoder_length: 150
+  max_prediction_length: 90
+  min_encoder_length: 50
   hidden_size: 128
   attention_head_size: 8
   dropout: 0.3
@@ -53,13 +68,13 @@ model:
   max_hidden_size: 256
   min_lstm_layers: 3
   max_lstm_layers: 5
-  min_attention_head_size: 4
+  min_attention_head_size: 6
   max_attention_head_size: 12
 
 # Training settings
 training:
   max_epochs: 100
-  batch_size: 48
+  batch_size: 32
   early_stopping_patience: 10
   optuna_trials: 30
   reduce_lr_patience: 5
