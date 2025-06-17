@@ -64,10 +64,8 @@ def load_data_and_model(config, selected_ticker, temp_raw_data_path, historical_
         checkpoint = torch.load(config['paths']['checkpoint_path'], map_location=torch.device('cpu'), weights_only=False)
         hyperparams = checkpoint["hyperparams"]
         if 'hidden_continuous_size' not in hyperparams:
-            hyperparams['hidden_continuous_size'] = 64
-            logger.warning("hidden_continuous_size nie znaleziono, ustawiono domyślnie na 64")
-        if 'loss' in hyperparams and isinstance(hyperparams['loss'], str):
-            hyperparams['loss'] = metrics.QuantileLoss(quantiles=config['model'].get('quantiles', [0.1, 0.5, 0.9])) if 'QuantileLoss' in hyperparams['loss'] else metrics.MAE()
+            hyperparams['hidden_continuous_size'] = config['model']['hidden_size'] // 2
+            logger.warning("hidden_continuous_size nie znaleziono, ustawiono domyślnie na połowę hidden_size")
         model = build_model(dataset, config, hyperparams=hyperparams)
         model.load_state_dict(checkpoint["state_dict"])
         model.eval()

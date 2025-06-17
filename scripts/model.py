@@ -28,8 +28,6 @@ def move_to_device(obj, device):
 class CustomTemporalFusionTransformer(LightningModule):
     def __init__(self, dataset, config, hyperparams=None):
         super().__init__()
-        # Zapisz hiperparametry, ignorując dataset oraz problematyczne klucze
-        self.save_hyperparameters(ignore=['dataset', 'loss'])
         self.config = config
         # Określ, czy używasz QuantileLoss
         use_quantile_loss = config['model'].get('use_quantile_loss', False)
@@ -49,7 +47,12 @@ class CustomTemporalFusionTransformer(LightningModule):
             "learning_rate": config['model']['learning_rate']
         }
         
-        # Filtruj parametry
+        # Zapisz hiperparametry, ignorując dataset
+        self.save_hyperparameters({k: v for k, v in params.items() if k != 'loss'})
+        self.hparams['quantiles'] = quantiles if use_quantile_loss else None
+        self.hparams['use_quantile_loss'] = use_quantile_loss
+        
+        # Filtruj parametry do przekazania do TemporalFusionTransformer
         valid_keys = [
             "hidden_size", "lstm_layers", "attention_head_size", "dropout", "hidden_continuous_size",
             "output_size", "loss", "log_interval", "reduce_on_plateau_patience", "learning_rate"
@@ -140,7 +143,7 @@ def build_model(dataset, config, trial=None, hyperparams=None):
         # Użyj hiperparametrów z checkpointu
         required_keys = [
             "hidden_size", "learning_rate", "attention_head_size", "dropout",
-            "lstm_layers", "hidden_continuous_size", "output_size", "loss",
+            "lstm_layers", "hidden_continuous_size", "output_size",
             "log_interval", "reduce_on_plateau_patience"
         ]
         filtered_hyperparams = {}
@@ -149,16 +152,26 @@ def build_model(dataset, config, trial=None, hyperparams=None):
                 filtered_hyperparams[key] = hyperparams[key]
             else:
                 logger.warning(f"Brak klucza {key} w hiperparametrach, używam wartości domyślnej")
-                if key == "output_size":
+                if key == "hidden_size":
+                    filtered_hyperparams[key] = config['model']['hidden_size']
+                elif key == "learning_rate":
+                    filtered_hyperparams[key] = config['model']['learning_rate']
+                elif key == "attention_head_size":
+                    filtered_hyperparams[key] = config['model']['attention_head_size']
+                elif key == "dropout":
+                    filtered_hyperparams[key] = config['model']['dropout']
+                elif key == "lstm_layers":
+                    filtered_hyperparams[key] = config['model']['lstm_layers']
+                elif key == "hidden_continuous_size":
+                    filtered_hyperparams[key] = config['model']['hidden_size'] // 2
+                elif key == "output_size":
                     filtered_hyperparams[key] = len(config['model'].get('quantiles', [0.1, 0.5, 0.9])) if config['model'].get('use_quantile_loss', False) else 1
-                elif key == "loss":
-                    filtered_hyperparams[key] = QuantileLoss(quantiles=config['model'].get('quantiles', [0.1, 0.5, 0.9])) if config['model'].get('use_quantile_loss', False) else MAE()
                 elif key == "log_interval":
                     filtered_hyperparams[key] = 10
                 elif key == "reduce_on_plateau_patience":
                     filtered_hyperparams[key] = config['training']['early_stopping_patience']
-                else:
-                    filtered_hyperparams[key] = config['model'].get(key, 0.01 if key == "learning_rate" else 1)
+        # Dodaj loss i quantiles
+        filtered_hyperparams['loss'] = QuantileLoss(quantiles=config['model'].get('quantiles', [0.1, 0.5, 0.9])) if config['model'].get('use_quantile_loss', False) else MAE()
         hyperparams = filtered_hyperparams
     else:
         # Domyślne hiperparametry z config.yaml

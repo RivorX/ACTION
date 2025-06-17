@@ -35,9 +35,6 @@ class CustomModelCheckpoint(Callback):
             logger.info(f"Zapisywanie checkpointu z {self.monitor}={current_score} w {self.save_path}")
             # Zapisz state_dict i hiperparametry
             hyperparams = dict(pl_module.hparams)
-            # Serializuj loss jako string
-            if 'loss' in hyperparams:
-                hyperparams['loss'] = str(hyperparams['loss'])
             checkpoint = {
                 "state_dict": pl_module.state_dict(),
                 "hyperparams": hyperparams
@@ -77,7 +74,7 @@ def objective(trial, train_dataset, val_dataset, config):
     )
     return trainer.callback_metrics["val_loss"].item()
 
-def train_model(dataset, config, use_optuna=True):
+def train_model(dataset, config, use_optuna=True, continue_training=False):
     # Wczytaj surowe dane z CSV
     df = pd.read_csv(config['data']['raw_data_path'])
     logger.info(f"Kolumny w raw_data: {df.columns.tolist()}")
@@ -170,7 +167,7 @@ def train_model(dataset, config, use_optuna=True):
     train_dataset = TimeSeriesDataSet.from_parameters(dataset.get_parameters(), train_df)
     val_dataset = TimeSeriesDataSet.from_parameters(dataset.get_parameters(), val_df)
 
-    if use_optuna:
+    if use_optuna and not continue_training:
         study = optuna.create_study(direction="minimize")
         study.optimize(lambda trial: objective(trial, train_dataset, val_dataset, config), n_trials=config['training']['optuna_trials'])
         best_params = study.best_params
@@ -179,18 +176,12 @@ def train_model(dataset, config, use_optuna=True):
         best_params = None
         logger.info("Pomijanie optymalizacji Optuna, używanie domyślnych hiperparametrów.")
 
-    final_model = build_model(dataset, config, hyperparams=best_params)
-
+    # Wczytywanie modelu
     checkpoint_path = config['paths']['checkpoint_path']
-    if os.path.exists(checkpoint_path):
+    if continue_training and os.path.exists(checkpoint_path):
         logger.info(f"Wczytywanie checkpointu z {checkpoint_path}")
         checkpoint = torch.load(checkpoint_path, map_location=torch.device('cpu'), weights_only=False)
         hyperparams = checkpoint["hyperparams"]
-        if 'loss' in hyperparams and isinstance(hyperparams['loss'], str):
-            if 'QuantileLoss' in hyperparams['loss']:
-                hyperparams['loss'] = pytorch_forecasting.metrics.QuantileLoss(quantiles=config['model'].get('quantiles', [0.1, 0.5, 0.9]))
-            else:
-                hyperparams['loss'] = pytorch_forecasting.metrics.MAE()
         final_model = build_model(dataset, config, hyperparams=hyperparams)
         try:
             final_model.load_state_dict(checkpoint["state_dict"])
@@ -199,7 +190,8 @@ def train_model(dataset, config, use_optuna=True):
             raise
         final_model.to('cuda' if torch.cuda.is_available() else 'cpu')
     else:
-        logger.info("Brak checkpointu, trenowanie od zera")
+        logger.info("Brak checkpointu lub kontynuacja wyłączona, trenowanie od zera")
+        final_model = build_model(dataset, config, hyperparams=best_params)
 
     trainer = Trainer(
         max_epochs=config['training']['max_epochs'],
@@ -227,8 +219,6 @@ def train_model(dataset, config, use_optuna=True):
         "state_dict": final_model.state_dict(),
         "hyperparams": dict(final_model.hparams)
     }
-    if 'loss' in checkpoint['hyperparams']:
-        checkpoint['hyperparams']['loss'] = str(checkpoint['hyperparams']['loss'])
     torch.save(checkpoint, config['paths']['model_save_path'])
     return final_model
 
@@ -236,4 +226,4 @@ if __name__ == "__main__":
     with open('config/config.yaml', 'r') as f:
         config = yaml.safe_load(f)
     dataset = torch.load(config['data']['processed_data_path'], weights_only=False)
-    train_model(dataset, config, use_optuna=True)
+    train_model(dataset, config, use_optuna=True, continue_training=False)
