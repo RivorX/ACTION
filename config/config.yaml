@@ -1,56 +1,11 @@
 # Data settings
 data:
-  tickers:
-  # Polska
-    - 'CDR.WA'    # CD Projekt (Polska, gry)
-    - 'PLW.WA'      # PlayWay
-    - 'TEN.WA'      # 11 bit studios
-    - 'BLO.WA'      # Bloober Team
-    - 'CIG.WA'      # CI Games
-    - 'PKO.WA'    # PKO BP (Polska, bankowość)
-    - 'PEO.WA'      # Bank Pekao
-    - 'ING.WA'      # ING Bank Śląski
-    - 'MBK.WA'      # mBank
-    - 'ALR.WA'      # Alior Bank
-    - 'PKN.WA'      # Orlen
-    - 'TPE.WA'      # Tauron
-    - 'ENA.WA'      # Enea
-    - 'PGE.WA'      # PGE
-    # Zagraniczne
-    - 'AAPL'      # Apple (USA, technologia)
-    - 'MSFT'      # Microsoft (USA, technologia)
-    - 'TSLA'      # Tesla (USA, motoryzacja)
-    - 'GOOGL'     # Alphabet (USA, technologia)
-    - 'AMZN'      # Amazon (USA, e-commerce)
-    - 'BMW.DE'    # BMW (Niemcy, motoryzacja)
-    - 'SIE.DE'    # Siemens (Niemcy, przemysł)
-    - 'SAN.PA'    # Sanofi (Francja, farmacja)
-    - 'TTE.PA'    # TotalEnergies (Francja, energia)
-    - 'BP.L'      # BP (Wielka Brytania, energia)
-    - 'HSBA.L'    # HSBC (Wielka Brytania, bankowość)
-    - '7203.T'    # Toyota (Japonia, motoryzacja)
-    - '9984.T'    # SoftBank (Japonia, technologia)
-    - '005930.KS' # Samsung (Korea Południowa, technologia, zmieniono z SSNLF)
-    - '2330.TW'   # TSMC (Tajwan, półprzewodniki)
-    - 'BABA'      # Alibaba (Chiny, e-commerce)
-    - 'JD'        # JD.com (Chiny, e-commerce)
-    - 'INFY.NS'   # Infosys (Indie, IT)
-    - 'RELIANCE.NS' # Reliance Industries (Indie, energia/konglomerat)
-    - 'NKE'       # Nike (USA, odzież)
-    - 'JPM'       # JPMorgan Chase (USA, bankowość)
-    - 'XOM'       # Exxon Mobil (USA, energia)
-    - 'PFE'       # Pfizer (USA, farmacja)
-    - 'VOW3.DE'   # Volkswagen (Niemcy, motoryzacja)
-    - 'RNO.PA'    # Renault (Francja, motoryzacja)
-    - 'NG.L'      # National Grid (Wielka Brytania, energia)
-    - 'TM'        # Toyota (USA, motoryzacja)
-    - 'SONY'      # Sony (Japonia, technologia)
-    - 'TCTZF'     # Tencent (Chiny, technologia)
-    - 'HDB'       # HDFC Bank (Indie, bankowość)
   years: 3
   raw_data_path: data/stock_data.csv
   processed_data_path: data/processed_dataset.pt
   normalizers_path: data/normalizers.pkl
+  # Tickery
+  tickers_file: config/training_tickers.yaml
 
 # Model settings
 model:

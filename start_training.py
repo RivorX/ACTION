@@ -1,0 +1,76 @@
+import os
+import yaml
+from scripts.data_fetcher import DataFetcher
+from scripts.preprocessor import DataPreprocessor
+from scripts.train import train_model
+from scripts.config_manager import ConfigManager
+import logging
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+def create_directories():
+    directories = ['data', 'models', 'config', 'logs']
+    for directory in directories:
+        if not os.path.exists(directory):
+            os.makedirs(directory)
+
+def start_training(regions: str = 'global', use_optuna: bool = False, continue_training: bool = True):
+    try:
+        create_directories()
+
+        # Wczytaj konfigurację
+        config_manager = ConfigManager()
+        config = config_manager.config
+        
+        # Przetwarzanie wybranych regionów
+        regions_list = [r.strip().lower() for r in regions.split(',')]
+        valid_regions = ['poland', 'europe', 'usa', 'global']
+        selected_regions = [r for r in regions_list if r in valid_regions]
+        if not selected_regions:
+            logger.warning("Nieprawidłowe regiony. Domyślnie wybrano 'global'.")
+            selected_regions = ['global']
+
+        logger.info(f"Pobieranie danych dla regionów: {', '.join(selected_regions)}...")
+
+        # Wczytaj tickery dla wybranych regionów
+        fetcher = DataFetcher(config_manager)
+        all_tickers = []
+        for region in selected_regions:
+            tickers = fetcher._load_tickers(region)
+            all_tickers.extend(tickers)
+        
+        # Usuń duplikaty tickerów
+        all_tickers = list(dict.fromkeys(all_tickers))
+        logger.info(f"Wybrane tickery: {all_tickers}")
+
+        # Aktualizacja konfiguracji z wybranymi tickerami
+        config['data']['tickers'] = all_tickers
+
+        # Pobierz dane
+        df = fetcher.fetch_global_stocks(region=None)  # region=None, bo tickery są już wybrane
+        if df.empty:
+            raise ValueError("Nie udało się pobrać danych giełdowych.")
+
+        # Preprocessuj dane
+        logger.info("Preprocessing danych...")
+        preprocessor = DataPreprocessor(config)
+        dataset = preprocessor.preprocess_data(df)
+
+        # Trenuj model
+        logger.info("Trenowanie modelu...")
+        train_model(dataset, config, use_optuna=use_optuna, continue_training=continue_training)
+
+        logger.info("Trening zakończony. Uruchom `streamlit run app.py`, aby użyć aplikacji.")
+    
+    except Exception as e:
+        logger.error(f"Wystąpił błąd podczas treningu: {str(e)}")
+        raise
+
+if __name__ == "__main__":
+    regions = input(f"Wybierz region(y) ({', '.join(['poland', 'europe', 'usa', 'global'])}, oddziel przecinkami, np. poland,europe) [domyślnie: global]: ") or 'global'
+    use_optuna_input = input("Użyć Optuna do optymalizacji? (tak/nie) [domyślnie: nie]: ").lower()
+    use_optuna = use_optuna_input == 'tak'  # Domyślnie False
+    continue_training_input = input("Kontynuować trening z checkpointu? (tak/nie) [domyślnie: tak]: ").lower()
+    continue_training = continue_training_input != 'nie'  # Domyślnie True
+    start_training(regions, use_optuna, continue_training)
