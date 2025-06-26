@@ -5,6 +5,9 @@ from pytorch_lightning import LightningModule
 import torch
 import logging
 from typing import Dict, Any, Optional, Union, List, Tuple
+import pickle
+from pathlib import Path
+import numpy as np
 
 # Konfiguracja logowania
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -95,8 +98,21 @@ class CustomTemporalFusionTransformer(LightningModule):
         super().__init__()
         self.model_config = ModelConfig(config)
         self.hyperparams = hyperparams if hyperparams else self.model_config.default_hyperparams
+        self.normalizers_path = Path(config['data']['normalizers_path'])
+        self.dataset = dataset  # Przechowuj dataset, aby uzyskać dostęp do target_normalizer
+        self._load_normalizers()
         self._initialize_model(dataset)
         self._save_hyperparameters()
+
+    def _load_normalizers(self):
+        """Wczytuje upscale normalizers from file."""
+        try:
+            with open(self.normalizers_path, 'rb') as f:
+                self.normalizers = pickle.load(f)
+            logger.info(f"Wczytano normalizery z: {self.normalizers_path}")
+        except Exception as e:
+            logger.error(f"Błąd wczytywania normalizerów: {e}")
+            self.normalizers = {}
 
     def _initialize_model(self, dataset):
         """Inicjalizuje TemporalFusionTransformer z filtrowanymi parametrami."""
@@ -139,7 +155,27 @@ class CustomTemporalFusionTransformer(LightningModule):
         self.log(f"{stage}_loss", loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=batch_size)
 
         if stage == 'val' and batch_idx % 50 == 0:
-            logger.info(f"Validation batch {batch_idx}: y_hat[0, :5] = {y_hat[0, :5].tolist()}, y_target[0, :5] = {y_target[0, :5].tolist()}")
+            # Denormalizacja y_hat i y_target
+            close_normalizer = self.normalizers.get('Close') or self.dataset.target_normalizer
+            if close_normalizer:
+                try:
+                    # Przeniesienie na CPU i konwersja na float32 przed denormalizacją
+                    y_hat_denorm = close_normalizer.inverse_transform(y_hat.float().cpu())
+                    y_target_denorm = close_normalizer.inverse_transform(y_target.float().cpu())
+                    # Odwrócenie transformacji logarytmicznej
+                    y_hat_denorm = np.expm1(y_hat_denorm.numpy())
+                    y_target_denorm = np.expm1(y_target_denorm.numpy())
+                    logger.info(
+                        f"Validation batch {batch_idx}: "
+                        f"y_hat_denorm[0, :5] = {y_hat_denorm[0, :5].tolist()}, "
+                        f"y_target_denorm[0, :5] = {y_target_denorm[0, :5].tolist()}"
+                    )
+                except Exception as e:
+                    logger.error(f"Błąd podczas denormalizacji: {e}")
+                    logger.info(f"Validation batch {batch_idx}: y_hat[0, :5] = {y_hat[0, :5].tolist()}, y_target[0, :5] = {y_target[0, :5].tolist()}")
+            else:
+                logger.warning("Brak normalizera dla 'Close', logowanie znormalizowanych wartości.")
+                logger.info(f"Validation batch {batch_idx}: y_hat[0, :5] = {y_hat[0, :5].tolist()}, y_target[0, :5] = {y_target[0, :5].tolist()}")
 
         return loss
 
