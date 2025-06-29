@@ -128,8 +128,8 @@ class DataPreprocessor:
             time_idx="time_idx",
             target="Close",
             group_ids=["group_id"],
-            min_encoder_length=self.config['model']['min_encoder_length'],
-            max_encoder_length=int(df['time_idx'].max()),
+            min_encoder_length=self.config['model']['min_encoder_length'],  # Minimalna długość enkodera
+            max_encoder_length=self.config['model']['max_encoder_length'],  # Maksymalna długość enkodera
             max_prediction_length=self.config['model']['max_prediction_length'],
             time_varying_known_reals=[f for f in numeric_features if f in df.columns and f != "Close"],
             time_varying_known_categoricals=["Day_of_Week", "Month"],

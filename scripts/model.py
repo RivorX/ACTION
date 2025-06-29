@@ -105,7 +105,7 @@ class CustomTemporalFusionTransformer(LightningModule):
         self._save_hyperparameters()
 
     def _load_normalizers(self):
-        """Wczytuje upscale normalizers from file."""
+        """Wczytuje normalizery z pliku."""
         try:
             with open(self.normalizers_path, 'rb') as f:
                 self.normalizers = pickle.load(f)
@@ -154,6 +154,10 @@ class CustomTemporalFusionTransformer(LightningModule):
         batch_size = x['encoder_cont'].size(0)
         self.log(f"{stage}_loss", loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=batch_size)
 
+        # Obliczanie l2_norm dla parametrów modelu
+        l2_norm = sum(p.pow(2).sum() for p in self.parameters()).sqrt().item()
+        self.log(f"{stage}_l2_norm", l2_norm, on_step=True, on_epoch=True, prog_bar=False, batch_size=batch_size)
+
         if stage == 'val' and batch_idx % 50 == 0:
             # Denormalizacja y_hat i y_target
             close_normalizer = self.normalizers.get('Close') or self.dataset.target_normalizer
@@ -185,10 +189,27 @@ class CustomTemporalFusionTransformer(LightningModule):
     def validation_step(self, batch: Tuple[Dict[str, torch.Tensor], List[torch.Tensor]], batch_idx: int) -> torch.Tensor:
         return self._shared_step(batch, batch_idx, 'val')
 
+    def on_validation_epoch_end(self) -> None:
+        """Loguje val_l2_norm i learning_rate na końcu każdej epoki walidacyjnej."""
+        # Pobierz średnią val_l2_norm z epoki
+        val_l2_norm = self.trainer.callback_metrics.get("val_l2_norm", None)
+        if val_l2_norm is not None:
+            logger.info(f"Validation epoch end: val_l2_norm = {val_l2_norm:.4f}")
+        else:
+            logger.warning("val_l2_norm nie jest dostępne w callback_metrics")
+
+        # Pobierz aktualny learning rate z optymalizatora
+        optimizer = self.optimizers()
+        if optimizer is not None:
+            current_lr = optimizer.param_groups[0]['lr']
+            logger.info(f"Validation epoch end: learning_rate = {current_lr:.6f}")
+        else:
+            logger.warning("Optimizer nie jest dostępny, brak learning_rate")
+
     def configure_optimizers(self) -> Dict[str, Any]:
         """Konfiguruje optymalizator i scheduler."""
         learning_rate = self.hyperparams.get('learning_rate', self.model_config.config['model']['learning_rate'])
-        optimizer = torch.optim.AdamW(self.parameters(), lr=learning_rate, weight_decay=0.01)
+        optimizer = torch.optim.AdamW(self.parameters(), lr=learning_rate, weight_decay=0.1)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer,
             patience=self.model_config.config['training']['reduce_lr_patience'],

@@ -11,6 +11,7 @@ data:
 model:
   max_prediction_length: 90
   min_encoder_length: 50
+  max_encoder_length: 365
   hidden_size: 128
   attention_head_size: 8
   dropout: 0.3
@@ -29,7 +30,7 @@ model:
 # Training settings
 training:
   max_epochs: 100
-  batch_size: 32
+  batch_size: 64
   early_stopping_patience: 10
   optuna_trials: 30
   reduce_lr_patience: 5

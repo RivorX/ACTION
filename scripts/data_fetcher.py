@@ -36,7 +36,6 @@ class DataFetcher:
                 return pd.DataFrame()
             df.reset_index(inplace=True)
             df['Ticker'] = ticker
-            logger.info(f"Ostatnie 5 wierszy danych dla {ticker}:\n{df.tail(5).to_string()}")
             return df[['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 'Ticker']]
         except Exception as e:
             logger.error(f"Błąd pobierania danych dla {ticker}: {e}")
