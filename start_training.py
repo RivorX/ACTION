@@ -15,7 +15,7 @@ def create_directories():
         if not os.path.exists(directory):
             os.makedirs(directory)
 
-def start_training(regions: str = 'global', use_optuna: bool = False, continue_training: bool = True):
+def start_training(regions: str = 'global', years: int = 3, use_optuna: bool = False, continue_training: bool = True):
     try:
         create_directories()
 
@@ -23,9 +23,13 @@ def start_training(regions: str = 'global', use_optuna: bool = False, continue_t
         config_manager = ConfigManager()
         config = config_manager.config
         
+        # Aktualizuj liczbę lat w konfiguracji
+        config['data']['years'] = years
+        logger.info(f"Ustawiono liczbę lat danych: {years}")
+
         # Przetwarzanie wybranych regionów
         regions_list = [r.strip().lower() for r in regions.split(',')]
-        valid_regions = ['poland', 'europe', 'usa', 'global']
+        valid_regions = ['poland', 'europe', 'usa', 'global', 'all']
         selected_regions = [r for r in regions_list if r in valid_regions]
         if not selected_regions:
             logger.warning("Nieprawidłowe regiony. Domyślnie wybrano 'global'.")
@@ -36,9 +40,15 @@ def start_training(regions: str = 'global', use_optuna: bool = False, continue_t
         # Wczytaj tickery dla wybranych regionów
         fetcher = DataFetcher(config_manager)
         all_tickers = []
-        for region in selected_regions:
-            tickers = fetcher._load_tickers(region)
-            all_tickers.extend(tickers)
+        if 'all' in selected_regions:
+            with open(config['data']['tickers_file'], 'r') as f:
+                tickers_config = yaml.safe_load(f)
+            for region in tickers_config['tickers']:
+                all_tickers.extend(tickers_config['tickers'][region])
+        else:
+            for region in selected_regions:
+                tickers = fetcher._load_tickers(region)
+                all_tickers.extend(tickers)
         
         # Usuń duplikaty tickerów
         all_tickers = list(dict.fromkeys(all_tickers))
@@ -68,9 +78,21 @@ def start_training(regions: str = 'global', use_optuna: bool = False, continue_t
         raise
 
 if __name__ == "__main__":
-    regions = input(f"Wybierz region(y) ({', '.join(['poland', 'europe', 'usa', 'global'])}, oddziel przecinkami, np. poland,europe) [domyślnie: global]: ") or 'global'
-    use_optuna_input = input("Użyć Optuna do optymalizacji? (tak/nie) [domyślnie: nie]: ").lower()
-    use_optuna = use_optuna_input == 'tak'  # Domyślnie False
-    continue_training_input = input("Kontynuować trening z checkpointu? (tak/nie) [domyślnie: tak]: ").lower()
-    continue_training = continue_training_input != 'nie'  # Domyślnie True
-    start_training(regions, use_optuna, continue_training)
+    regions = input(f"Wybierz region(y) ({', '.join(['poland', 'europe', 'usa', 'global', 'all'])}, oddziel przecinkami, np. poland,europe) [domyślnie: global]: ").lower() or 'global'
+    
+    years_input = input("Podaj liczbę lat danych historycznych [domyślnie: 3]: ").lower() or '3'
+    try:
+        years = int(years_input)
+        if years <= 0:
+            raise ValueError("Liczba lat musi być dodatnia.")
+    except ValueError as e:
+        logger.error(f"Błąd: {e}. Używam domyślnej wartości 3 lata.")
+        years = 3
+
+    use_optuna_input = input("Użyć Optuna do optymalizacji? (tak/nie) [domyślnie: nie]: ").lower() or 'nie'
+    use_optuna = use_optuna_input == 'tak'
+
+    continue_training_input = input("Kontynuować trening z checkpointu? (tak/nie) [domyślnie: tak]: ").lower() or 'tak'
+    continue_training = continue_training_input != 'nie'
+
+    start_training(regions, years, use_optuna, continue_training)
