@@ -24,55 +24,66 @@ class FeatureEngineer:
         return 100 - (100 / (1 + rs))
 
     @staticmethod
+    def calculate_macd(prices: pd.Series) -> tuple:
+        """Oblicza MACD i linię sygnałową."""
+        exp12 = prices.ewm(span=12, adjust=False).mean()
+        exp26 = prices.ewm(span=26, adjust=False).mean()
+        macd = exp12 - exp26
+        signal = macd.ewm(span=9, adjust=False).mean()
+        return macd, signal
+
+    @staticmethod
+    def calculate_stochastic_k(group: pd.DataFrame) -> pd.Series:
+        """Oblicza Stochastic %K."""
+        low_14 = group['Low'].rolling(window=14).min()
+        high_14 = group['High'].rolling(window=14).max()
+        return 100 * (group['Close'] - low_14) / (high_14 - low_14)
+
+    @staticmethod
+    def calculate_true_range(group: pd.DataFrame) -> pd.Series:
+        """Oblicza True Range."""
+        high_low = group['High'] - group['Low']
+        high_close_prev = abs(group['High'] - group['Close'].shift(1))
+        low_close_prev = abs(group['Low'] - group['Close'].shift(1))
+        return pd.concat([high_low, high_close_prev, low_close_prev], axis=1).max(axis=1)
+
+    @staticmethod
+    def calculate_obv(group: pd.DataFrame) -> pd.Series:
+        """Oblicza On-Balance Volume."""
+        return (np.sign(group['Close'].diff()) * group['Volume']).cumsum()
+
+    @staticmethod
     def remove_outliers(df: pd.DataFrame, column: str, threshold: float = 3) -> pd.DataFrame:
         """Usuwa wartości odstające na podstawie z-score."""
         z_scores = (df[column] - df[column].mean()) / df[column].std()
         return df[abs(z_scores) < threshold]
 
     def add_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Dodaje nowe cechy do ramki danych."""
-        df['MA10'] = df['Close'].rolling(window=10).mean()
-        df['MA50'] = df['Close'].rolling(window=50).mean()
-        df['RSI'] = self.compute_rsi(df['Close'])
-        df['Volatility'] = df['Close'].rolling(window=20).std()
-
-        # MACD
-        exp12 = df['Close'].ewm(span=12, adjust=False).mean()
-        exp26 = df['Close'].ewm(span=26, adjust=False).mean()
-        df['MACD'] = exp12 - exp26
-        df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
-
-        # Wstęgi Bollingera
-        df['BB_Middle'] = df['Close'].rolling(window=20).mean()
-        df['BB_Std'] = df['Close'].rolling(window=20).std()
-        df['BB_Upper'] = df['BB_Middle'] + 2 * df['BB_Std']
-        df['BB_Lower'] = df['BB_Middle'] - 2 * df['BB_Std']
-
-        # Stochastic Oscillator
-        low_14 = df['Low'].rolling(window=14).min()
-        high_14 = df['High'].rolling(window=14).max()
-        df['Stochastic_K'] = 100 * (df['Close'] - low_14) / (high_14 - low_14)
-        df['Stochastic_D'] = df['Stochastic_K'].rolling(window=3).mean()
-
-        # ATR
-        df['High_Low'] = df['High'] - df['Low']
-        df['High_Close_Prev'] = abs(df['High'] - df['Close'].shift(1))
-        df['Low_Close_Prev'] = abs(df['Low'] - df['Close'].shift(1))
-        df['TR'] = df[['High_Low', 'High_Close_Prev', 'Low_Close_Prev']].max(axis=1)
-        df['ATR'] = df['TR'].rolling(window=14).mean()
-        df = df.drop(['High_Low', 'High_Close_Prev', 'Low_Close_Prev'], axis=1)
-
-        # OBV
-        df['OBV'] = (np.sign(df['Close'].diff()) * df['Volume']).cumsum()
-
-        # Procentowa zmiana ceny
-        df['Price_Change'] = df['Close'].pct_change()
-
-        # Dzień tygodnia i miesiąc
+        """Dodaje nowe cechy do ramki danych z grupowaniem po Ticker."""
+        df = df.copy()
         df['Date'] = pd.to_datetime(df['Date'], utc=True)
-        df['Day_of_Week'] = df['Date'].dt.dayofweek.astype(str)
-        df['Month'] = df['Date'].dt.month.astype(str)
 
+        def apply_features(group):
+            group['MA10'] = group['Close'].rolling(window=10).mean()
+            group['MA50'] = group['Close'].rolling(window=50).mean()
+            group['RSI'] = self.compute_rsi(group['Close'])
+            group['Volatility'] = group['Close'].rolling(window=20).std()
+            group['MACD'], group['MACD_Signal'] = self.calculate_macd(group['Close'])
+            group['BB_Middle'] = group['Close'].rolling(window=20).mean()
+            group['BB_Std'] = group['Close'].rolling(window=20).std()
+            group['BB_Upper'] = group['BB_Middle'] + 2 * group['BB_Std']
+            group['BB_Lower'] = group['BB_Middle'] - 2 * group['BB_Std']
+            group['Stochastic_K'] = self.calculate_stochastic_k(group)
+            group['Stochastic_D'] = group['Stochastic_K'].rolling(window=3).mean()
+            group['TR'] = self.calculate_true_range(group)
+            group['ATR'] = group['TR'].rolling(window=14).mean()
+            group['OBV'] = self.calculate_obv(group)
+            group['Price_Change'] = group['Close'].pct_change()
+            group['Day_of_Week'] = group['Date'].dt.dayofweek.astype(str)
+            group['Month'] = group['Date'].dt.month.astype(str)
+            return group
+
+        df = df.groupby('Ticker').apply(apply_features).reset_index(drop=True)
         return df.ffill().bfill().dropna()
 
 class DataPreprocessor:

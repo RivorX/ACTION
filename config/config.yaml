@@ -12,29 +12,29 @@ model:
   max_prediction_length: 90
   min_encoder_length: 50
   max_encoder_length: 365
-  hidden_size: 128
+  hidden_size: 256
   attention_head_size: 8
-  dropout: 0.3
+  dropout: 0.2
   learning_rate: 0.001
-  lstm_layers: 5
+  lstm_layers: 4
   loss: QuantileLoss
   use_quantile_loss: true
   quantiles: [0.1, 0.5, 0.9]
   min_hidden_size: 64
   max_hidden_size: 256
   min_lstm_layers: 3
-  max_lstm_layers: 5
+  max_lstm_layers: 4
   min_attention_head_size: 6
   max_attention_head_size: 12
 
 # Training settings
 training:
   max_epochs: 100
-  batch_size: 64
+  batch_size: 32
   early_stopping_patience: 10
-  optuna_trials: 30
-  reduce_lr_patience: 5
-  reduce_lr_factor: 0.5
+  optuna_trials: 5  # Number of trials for hyperparameter optimization
+  reduce_lr_patience: 3
+  reduce_lr_factor: 0.3
 
 # Paths
 paths:

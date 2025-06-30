@@ -159,6 +159,9 @@ class CustomTemporalFusionTransformer(LightningModule):
         self.log(f"{stage}_l2_norm", l2_norm, on_step=True, on_epoch=True, prog_bar=False, batch_size=batch_size)
 
         if stage == 'val' and batch_idx % 50 == 0:
+            # Logowanie wartości przed denormalizacją
+            logger.info(f"Validation batch {batch_idx}: y_hat[0, :5] = {y_hat[0, :5].tolist()}, y_target[0, :5] = {y_target[0, :5].tolist()}")
+
             # Denormalizacja y_hat i y_target
             close_normalizer = self.normalizers.get('Close') or self.dataset.target_normalizer
             if close_normalizer:
@@ -166,6 +169,8 @@ class CustomTemporalFusionTransformer(LightningModule):
                     # Przeniesienie na CPU i konwersja na float32 przed denormalizacją
                     y_hat_denorm = close_normalizer.inverse_transform(y_hat.float().cpu())
                     y_target_denorm = close_normalizer.inverse_transform(y_target.float().cpu())
+                    # Logowanie po inverse_transform, przed np.expm1
+                    logger.info(f"Validation batch {batch_idx}: y_hat_denorm_before_expm1[0, :5] = {y_hat_denorm[0, :5].tolist()}, y_target_denorm_before_expm1[0, :5] = {y_target_denorm[0, :5].tolist()}")
                     # Odwrócenie transformacji logarytmicznej
                     y_hat_denorm = np.expm1(y_hat_denorm.numpy())
                     y_target_denorm = np.expm1(y_target_denorm.numpy())

@@ -44,7 +44,6 @@ def load_tickers_and_names():
         with open(company_names_file, 'r') as f:
             company_names = yaml.safe_load(f)['company_names']
         
-        # Połącz tickery z pełnymi nazwami
         ticker_options = {ticker: f"{ticker} - {company_names.get(ticker, 'Nieznana firma')}" for ticker in all_tickers}
         return ticker_options
     except Exception as e:
@@ -53,7 +52,7 @@ def load_tickers_and_names():
         return {}
 
 def load_data_and_model(config, ticker, temp_raw_data_path, historical_mode=False, trim_days=0):
-    """Wczytuje dane i model na podstawie tickera."""
+    """Wczytuje dane i model na podstawie tickera oraz porównuje parametry normalizerów."""
     fetcher = DataFetcher(ConfigManager())
     start_date = datetime.now() - pd.Timedelta(days=365 + trim_days)
     new_data = fetcher.fetch_stock_data(ticker, start_date, datetime.now())
@@ -82,6 +81,21 @@ def load_data_and_model(config, ticker, temp_raw_data_path, historical_mode=Fals
         st.error("Błąd wczytywania normalizerów.")
         raise
 
+    # Porównanie parametrów normalizerów
+    # W funkcji load_data_and_model
+    try:
+        close_normalizer_params = normalizers['Close'].get_parameters() if 'Close' in normalizers else {}
+        target_normalizer_params = dataset.target_normalizer.get_parameters()
+        logger.info(f"Parametry normalizera dla Close (normalizers.pkl): {close_normalizer_params}")
+        logger.info(f"Parametry normalizera dla Close (dataset.target_normalizer): {target_normalizer_params}")
+        # Poprawione porównanie
+        if not torch.allclose(close_normalizer_params, target_normalizer_params, rtol=1e-5, atol=1e-8):
+            logger.warning("Normalizery dla Close różnią się! Może to powodować błędy w predykcjach.")
+        else:
+            logger.info("Normalizery dla Close są zgodne.")
+    except Exception as e:
+        logger.error(f"Błąd podczas porównywania normalizerów: {e}")
+
     try:
         checkpoint = torch.load(config['paths']['checkpoint_path'], map_location=torch.device('cpu'), weights_only=False)
         hyperparams = checkpoint["hyperparams"]
@@ -100,7 +114,7 @@ def load_data_and_model(config, ticker, temp_raw_data_path, historical_mode=Fals
     return new_data, dataset, normalizers, model
 
 def preprocess_data(config, ticker_data, ticker, normalizers, historical_mode=False, trim_days=0):
-    """Preprocessuje dane dla wybranego tickera."""
+    """Preprocessuje dane dla wybranego tickera z logowaniem wartości przed i po normalizacji."""
     ticker_data = ticker_data[ticker_data['Ticker'] == ticker].copy().reset_index(drop=True)
     ticker_data['Date'] = pd.to_datetime(ticker_data['Date'], utc=True)
     
@@ -119,7 +133,9 @@ def preprocess_data(config, ticker_data, ticker, normalizers, historical_mode=Fa
     log_features = ["Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "BB_Middle", "BB_Upper", "BB_Lower", "ATR"]
     for feature in log_features:
         if feature in ticker_data.columns:
+            logger.info(f"{feature} before log1p: {ticker_data[feature].head().tolist()}")
             ticker_data[feature] = np.log1p(ticker_data[feature].clip(lower=0))
+            logger.info(f"{feature} after log1p: {ticker_data[feature].head().tolist()}")
 
     numeric_features = [
         "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI", "Volatility",
@@ -128,7 +144,9 @@ def preprocess_data(config, ticker_data, ticker, normalizers, historical_mode=Fa
     ]
     for feature in numeric_features:
         if feature in ticker_data.columns and feature in normalizers:
+            logger.info(f"{feature} before normalization: {ticker_data[feature].head().tolist()}")
             ticker_data[feature] = normalizers[feature].transform(ticker_data[feature].values)
+            logger.info(f"{feature} after normalization: {ticker_data[feature].head().tolist()}")
 
     categorical_columns = ['Day_of_Week', 'Month']
     for cat_col in categorical_columns:
@@ -153,8 +171,11 @@ def generate_predictions(config, dataset, model, ticker_data):
 
     pred_array = predictions.output.to('cpu')
     target_normalizer = dataset.target_normalizer
+    logger.info(f"Predykcje przed denormalizacją (pierwsze 5 dla mediany): {pred_array[0, :5, 1].tolist()}")
     pred_array = target_normalizer.inverse_transform(pred_array)
+    logger.info(f"Predykcje po inverse_transform, przed expm1 (pierwsze 5 dla mediany): {pred_array[0, :5, 1].tolist()}")
     pred_array = np.expm1(pred_array.numpy())
+    logger.info(f"Predykcje po expm1 (pierwsze 5 dla mediany): {pred_array[0, :5, 1].tolist()}")
 
     if len(pred_array.shape) == 3:
         median = pred_array[0, :, 1]
@@ -343,11 +364,9 @@ def main():
     config = load_config()
     temp_raw_data_path = 'data/temp_stock_data.csv'
 
-    # Wczytaj tickery z pełnymi nazwami
     ticker_options = load_tickers_and_names()
     default_ticker = "AAPL" if "AAPL" in ticker_options else (list(ticker_options.keys())[0] if ticker_options else "AAPL")
 
-    # Wybór tickera z listy lub ręczne wprowadzenie
     ticker_option = st.selectbox(
         "Wybierz spółkę z listy lub wpisz własną:",
         options=["Wpisz ręcznie"] + list(ticker_options.values()),
