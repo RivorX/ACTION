@@ -135,13 +135,59 @@ class CustomTemporalFusionTransformer(LightningModule):
 
     def forward(self, x: Dict[str, torch.Tensor]) -> torch.Tensor:
         x = move_to_device(x, self.device)
-        return self.model(x)[0]
+        output = self.model(x)
+        # Jeśli to tuple/lista, zwróć pierwszy element (predykcje)
+        if isinstance(output, (tuple, list)):
+            return output[0]
+        return output
 
     def predict(self, data, **kwargs):
         """Deleguje predykcję do wewnętrznego modelu."""
         predictions = self.model.predict(data, **kwargs)
         logger.info(f"Kształt zwracanych predykcji: {predictions.output.shape}")
         return predictions
+
+    def interpret_output(self, x: Dict[str, torch.Tensor], **kwargs) -> Dict[str, Any]:
+        """Deleguje interpretację wyjścia do wewnętrznego modelu TFT."""
+        x = move_to_device(x, self.device)
+        
+        # Najpierw sprawdź, czy model ma wszystkie wymagane komponenty
+        try:
+            # Wywołaj model w trybie interpretacji - to zwraca pełne dane
+            self.model.eval()
+            with torch.no_grad():
+                # Wywołaj model bezpośrednio, aby uzyskać pełne dane wyjściowe
+                full_output = self.model(x)
+                
+                # Sprawdź, czy full_output ma wymagane klucze
+                if isinstance(full_output, dict):
+                    logger.info(f"Model zwrócił następujące klucze: {list(full_output.keys())}")
+                    return self.model.interpret_output(full_output, **kwargs)
+                else:
+                    # Jeśli model zwraca tensor, musimy go przekonwertować na format słownikowy
+                    logger.info("Model zwrócił tensor, konwertuję na format słownikowy")
+                    
+                    # Przygotuj pełne dane wyjściowe poprzez wywołanie _forward_full
+                    if hasattr(self.model, '_forward_full'):
+                        full_output = self.model._forward_full(x)
+                    else:
+                        # Wywołaj model bezpośrednio w trybie pełnym
+                        full_output = self.model.forward(x)
+                    
+                    return self.model.interpret_output(full_output, **kwargs)
+                    
+        except Exception as e:
+            logger.error(f"Błąd w interpret_output: {e}")
+            # Spróbuj alternatywnego podejścia
+            try:
+                # Wywołaj model w trybie treningowym, aby uzyskać pełne dane
+                self.model.train()
+                full_output = self.model(x)
+                self.model.eval()
+                return self.model.interpret_output(full_output, **kwargs)
+            except Exception as e2:
+                logger.error(f"Alternatywna metoda również nie działa: {e2}")
+                raise e
 
     def _shared_step(self, batch: Tuple[Dict[str, torch.Tensor], List[torch.Tensor]], batch_idx: int, stage: str) -> torch.Tensor:
         """Wspólna logika dla kroku treningowego i walidacyjnego."""
