@@ -64,23 +64,52 @@ class FeatureEngineer:
         df['Date'] = pd.to_datetime(df['Date'], utc=True)
 
         def apply_features(group):
+            # Podstawowe średnie kroczące
             group['MA10'] = group['Close'].rolling(window=10).mean()
             group['MA50'] = group['Close'].rolling(window=50).mean()
+            
+            # Wskaźniki techniczne
             group['RSI'] = self.compute_rsi(group['Close'])
             group['Volatility'] = group['Close'].rolling(window=20).std()
             group['MACD'], group['MACD_Signal'] = self.calculate_macd(group['Close'])
-            group['BB_Middle'] = group['Close'].rolling(window=20).mean()
-            group['BB_Std'] = group['Close'].rolling(window=20).std()
-            group['BB_Upper'] = group['BB_Middle'] + 2 * group['BB_Std']
-            group['BB_Lower'] = group['BB_Middle'] - 2 * group['BB_Std']
             group['Stochastic_K'] = self.calculate_stochastic_k(group)
             group['Stochastic_D'] = group['Stochastic_K'].rolling(window=3).mean()
             group['TR'] = self.calculate_true_range(group)
             group['ATR'] = group['TR'].rolling(window=14).mean()
             group['OBV'] = self.calculate_obv(group)
-            group['Price_Change'] = group['Close'].pct_change()
+            
+            # NOWE CECHY OPARTE NA CLOSE - Feature Engineering Close
+            # Momentum Close
+            group['Close_momentum_1d'] = group['Close'] - group['Close'].shift(1)
+            group['Close_momentum_5d'] = group['Close'] - group['Close'].shift(5)
+            
+            # Close względem średnich kroczących
+            group['Close_vs_MA10'] = group['Close'] / group['MA10']
+            group['Close_vs_MA50'] = group['Close'] / group['MA50']
+            
+            # Pozycja Close w oknie 20-dniowym (percentyl)
+            group['Close_percentile_20d'] = group['Close'].rolling(window=20).rank(pct=True)
+            
+            # Zmienność Close w 5 dniach
+            group['Close_volatility_5d'] = group['Close'].rolling(window=5).std()
+            
+            # Dywergencja między trendem Close a RSI
+            close_trend = group['Close'].rolling(window=5).apply(lambda x: np.polyfit(range(len(x)), x, 1)[0])
+            rsi_trend = group['RSI'].rolling(window=5).apply(lambda x: np.polyfit(range(len(x)), x, 1)[0])
+            group['Close_RSI_divergence'] = close_trend - rsi_trend
+            
+            # CELE PREDYKCJI - Relative Returns
+            group['Relative_Returns'] = group['Close'].pct_change().shift(-1)  # (Close_t+1 - Close_t) / Close_t
+            group['Log_Returns'] = np.log(group['Close'] / group['Close'].shift(1)).shift(-1)  # log(Close_t+1 / Close_t)
+            
+            # Dodatkowe cele dla multi-target prediction
+            group['Future_Volume'] = group['Volume'].shift(-1)
+            group['Future_Volatility'] = group['Volatility'].shift(-1)
+            
+            # Podstawowe cechy czasowe
             group['Day_of_Week'] = group['Date'].dt.dayofweek.astype(str)
             group['Month'] = group['Date'].dt.month.astype(str)
+            
             return group
 
         df = df.groupby('Ticker').apply(apply_features).reset_index(drop=True)
@@ -110,18 +139,23 @@ class DataPreprocessor:
         df['time_idx'] = (df['Date'] - df['Date'].min()).dt.days.astype(int)
         df['group_id'] = df['Ticker']
 
-        # Transformacja logarytmiczna
-        log_features = ["Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "BB_Middle", "BB_Upper", "BB_Lower", "ATR"]
+        # Transformacja logarytmiczna - USUNIĘTO BB cechy
+        log_features = ["Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "ATR"]
         for feature in log_features:
             if feature in df.columns:
                 df[feature] = np.log1p(df[feature].clip(lower=0))
 
-        # Normalizacja
+        # Normalizacja - ZAKTUALIZOWANA LISTA CECH
         numeric_features = [
             "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI", "Volatility",
-            "MACD", "MACD_Signal", "BB_Middle", "BB_Upper", "BB_Lower", "Stochastic_K",
-            "Stochastic_D", "ATR", "OBV", "Price_Change"
+            "MACD", "MACD_Signal", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
+            # Nowe cechy oparte na Close
+            "Close_momentum_1d", "Close_momentum_5d", "Close_vs_MA10", "Close_vs_MA50",
+            "Close_percentile_20d", "Close_volatility_5d", "Close_RSI_divergence",
+            # Cele predykcji
+            "Relative_Returns", "Log_Returns", "Future_Volume", "Future_Volatility"
         ]
+        
         normalizers = {}
         for feature in numeric_features:
             if feature in df.columns:
@@ -133,22 +167,28 @@ class DataPreprocessor:
             pickle.dump(normalizers, f)
         logger.info(f"Normalizery zapisane do: {self.normalizers_path}")
 
-        # Utwórz dataset
+        # MULTI-TARGET PREDICTION - przewiduj jednocześnie 3 cele
+        targets = ["Relative_Returns", "Future_Volume", "Future_Volatility"]
+        
+        # Utwórz dataset z nowym celem predykcji (Relative Returns)
         dataset = TimeSeriesDataSet(
             df,
             time_idx="time_idx",
-            target="Close",
+            target="Relative_Returns",  # ZMIENIONY CEL na relative returns
             group_ids=["group_id"],
-            min_encoder_length=self.config['model']['min_encoder_length'],  # Minimalna długość enkodera
-            max_encoder_length=self.config['model']['max_encoder_length'],  # Maksymalna długość enkodera
+            min_encoder_length=self.config['model']['min_encoder_length'],
+            max_encoder_length=self.config['model']['max_encoder_length'],
             max_prediction_length=self.config['model']['max_prediction_length'],
-            time_varying_known_reals=[f for f in numeric_features if f in df.columns and f != "Close"],
+            # Cechy czasowe znane - USUNIĘTO BB cechy, dodano nowe cechy Close
+            time_varying_known_reals=[f for f in numeric_features 
+                                    if f in df.columns and f not in targets],
             time_varying_known_categoricals=["Day_of_Week", "Month"],
-            time_varying_unknown_reals=["Close"],
-            target_normalizer=normalizers.get("Close", TorchNormalizer()),
+            time_varying_unknown_reals=["Relative_Returns"],  # Cel predykcji
+            target_normalizer=normalizers.get("Relative_Returns", TorchNormalizer()),
             allow_missing_timesteps=True,
             add_encoder_length=False
         )
         logger.info(f"Target normalizer: {dataset.target_normalizer}")
+        
         dataset.save(self.processed_data_path)
         return dataset

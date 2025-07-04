@@ -95,17 +95,21 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
         normalizers = pickle.load(f)
     logger.info(f"Wczytano normalizery z: {config['data']['normalizers_path']}")
     
-    # Transformacja logarytmiczna
-    log_features = ["Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "BB_Middle", "BB_Upper", "BB_Lower", "ATR"]
+    # Transformacja logarytmiczna - USUNIĘTO BB cechy
+    log_features = ["Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "ATR"]
     for feature in log_features:
         if feature in df.columns:
             df[feature] = np.log1p(df[feature].clip(lower=0))
     
-    # Normalizacja
+    # Normalizacja - ZAKTUALIZOWANA LISTA CECH
     numeric_features = [
         "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI", "Volatility",
-        "MACD", "MACD_Signal", "BB_Middle", "BB_Upper", "BB_Lower", "Stochastic_K",
-        "Stochastic_D", "ATR", "OBV", "Price_Change"
+        "MACD", "MACD_Signal", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
+        # Nowe cechy oparte na Close
+        "Close_momentum_1d", "Close_momentum_5d", "Close_vs_MA10", "Close_vs_MA50",
+        "Close_percentile_20d", "Close_volatility_5d", "Close_RSI_divergence",
+        # Cele predykcji
+        "Relative_Returns", "Log_Returns", "Future_Volume", "Future_Volatility"
     ]
     for feature in numeric_features:
         if feature in df.columns and feature in normalizers:

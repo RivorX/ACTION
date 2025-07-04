@@ -54,7 +54,7 @@ def load_tickers_and_names():
 def load_data_and_model(config, ticker, temp_raw_data_path, historical_mode=False, trim_days=0):
     """Wczytuje dane i model na podstawie tickera oraz porównuje parametry normalizerów."""
     fetcher = DataFetcher(ConfigManager())
-    start_date = datetime.now() - pd.Timedelta(days=365 + trim_days)
+    start_date = pd.Timestamp(datetime.now(), tz='UTC') - pd.Timedelta(days=365 + trim_days)
     new_data = fetcher.fetch_stock_data(ticker, start_date, datetime.now())
     if new_data.empty:
         logger.error(f"Nie udało się pobrać danych dla {ticker}")
@@ -81,18 +81,17 @@ def load_data_and_model(config, ticker, temp_raw_data_path, historical_mode=Fals
         st.error("Błąd wczytywania normalizerów.")
         raise
 
-    # Porównanie parametrów normalizerów
-    # W funkcji load_data_and_model
+    # Porównanie parametrów normalizerów - ZAKTUALIZOWANE dla Relative_Returns
     try:
-        close_normalizer_params = normalizers['Close'].get_parameters() if 'Close' in normalizers else {}
+        relative_returns_normalizer_params = normalizers['Relative_Returns'].get_parameters() if 'Relative_Returns' in normalizers else {}
         target_normalizer_params = dataset.target_normalizer.get_parameters()
-        logger.info(f"Parametry normalizera dla Close (normalizers.pkl): {close_normalizer_params}")
-        logger.info(f"Parametry normalizera dla Close (dataset.target_normalizer): {target_normalizer_params}")
+        logger.info(f"Parametry normalizera dla Relative_Returns (normalizers.pkl): {relative_returns_normalizer_params}")
+        logger.info(f"Parametry normalizera dla target (dataset.target_normalizer): {target_normalizer_params}")
         # Poprawione porównanie
-        if not torch.allclose(close_normalizer_params, target_normalizer_params, rtol=1e-5, atol=1e-8):
-            logger.warning("Normalizery dla Close różnią się! Może to powodować błędy w predykcjach.")
+        if not torch.allclose(relative_returns_normalizer_params, target_normalizer_params, rtol=1e-5, atol=1e-8):
+            logger.warning("Normalizery dla Relative_Returns różnią się! Może to powodować błędy w predykcjach.")
         else:
-            logger.info("Normalizery dla Close są zgodne.")
+            logger.info("Normalizery dla Relative_Returns są zgodne.")
     except Exception as e:
         logger.error(f"Błąd podczas porównywania normalizerów: {e}")
 
@@ -130,23 +129,23 @@ def preprocess_data(config, ticker_data, ticker, normalizers, historical_mode=Fa
     ticker_data['time_idx'] = range(len(ticker_data))
     ticker_data['group_id'] = ticker
 
-    log_features = ["Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "BB_Middle", "BB_Upper", "BB_Lower", "ATR"]
+    # Transformacja logarytmiczna - USUNIĘTO BB cechy
+    log_features = ["Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "ATR"]
     for feature in log_features:
         if feature in ticker_data.columns:
-            logger.info(f"{feature} before log1p: {ticker_data[feature].head().tolist()}")
             ticker_data[feature] = np.log1p(ticker_data[feature].clip(lower=0))
-            logger.info(f"{feature} after log1p: {ticker_data[feature].head().tolist()}")
 
+    # Normalizacja - ZAKTUALIZOWANA LISTA CECH
     numeric_features = [
         "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI", "Volatility",
-        "MACD", "MACD_Signal", "BB_Middle", "BB_Upper", "BB_Lower", "Stochastic_K",
-        "Stochastic_D", "ATR", "OBV", "Price_Change"
+        "MACD", "MACD_Signal", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
+        "Close_momentum_1d", "Close_momentum_5d", "Close_vs_MA10", "Close_vs_MA50",
+        "Close_percentile_20d", "Close_volatility_5d", "Close_RSI_divergence",
+        "Relative_Returns", "Log_Returns", "Future_Volume", "Future_Volatility"
     ]
     for feature in numeric_features:
         if feature in ticker_data.columns and feature in normalizers:
-            logger.info(f"{feature} before normalization: {ticker_data[feature].head().tolist()}")
             ticker_data[feature] = normalizers[feature].transform(ticker_data[feature].values)
-            logger.info(f"{feature} after normalization: {ticker_data[feature].head().tolist()}")
 
     categorical_columns = ['Day_of_Week', 'Month']
     for cat_col in categorical_columns:
@@ -171,16 +170,51 @@ def generate_predictions(config, dataset, model, ticker_data):
 
     pred_array = predictions.output.to('cpu')
     target_normalizer = dataset.target_normalizer
-    logger.info(f"Predykcje przed denormalizacją (pierwsze 5 dla mediany): {pred_array[0, :5, 1].tolist()}")
+    logger.info(f"Predykcje Relative Returns przed denormalizacją (pierwsze 5 dla mediany): {pred_array[0, :5, 1].tolist()}")
+    
+    # Denormalizacja Relative Returns
     pred_array = target_normalizer.inverse_transform(pred_array)
-    logger.info(f"Predykcje po inverse_transform, przed expm1 (pierwsze 5 dla mediany): {pred_array[0, :5, 1].tolist()}")
-    pred_array = np.expm1(pred_array.numpy())
-    logger.info(f"Predykcje po expm1 (pierwsze 5 dla mediany): {pred_array[0, :5, 1].tolist()}")
-
+    logger.info(f"Predykcje Relative Returns po denormalizacji (pierwsze 5 dla mediany): {pred_array[0, :5, 1].tolist()}")
+    
+    # Konwersja Relative Returns na ceny Close
+    last_close_price = ticker_data['Close'].iloc[-1]
+    logger.info(f"Ostatnia cena Close (znormalizowana): {last_close_price}")
+    
+    try:
+        with open(config['data']['normalizers_path'], 'rb') as f:
+            normalizers = pickle.load(f)
+        close_normalizer = normalizers.get('Close', target_normalizer)
+    except:
+        close_normalizer = target_normalizer
+    
+    last_close_denorm = close_normalizer.inverse_transform(torch.tensor([[last_close_price]]).float())
+    last_close_denorm = np.expm1(last_close_denorm.numpy())[0, 0]
+    logger.info(f"Ostatnia cena Close (denormalizowana): {last_close_denorm}")
+    
     if len(pred_array.shape) == 3:
-        median = pred_array[0, :, 1]
-        lower_bound = pred_array[0, :, 0]
-        upper_bound = pred_array[0, :, 2]
+        relative_returns_median = pred_array[0, :, 1]
+        relative_returns_lower = pred_array[0, :, 0]  
+        relative_returns_upper = pred_array[0, :, 2]
+        
+        current_price = last_close_denorm
+        median = []
+        lower_bound = []
+        upper_bound = []
+        
+        for i in range(len(relative_returns_median)):
+            price_median = current_price * (1 + relative_returns_median[i])
+            price_lower = current_price * (1 + relative_returns_lower[i])
+            price_upper = current_price * (1 + relative_returns_upper[i])
+            
+            median.append(price_median)
+            lower_bound.append(price_lower)
+            upper_bound.append(price_upper)
+            
+            current_price = price_median
+        
+        median = np.array(median)
+        lower_bound = np.array(lower_bound)
+        upper_bound = np.array(upper_bound)
     else:
         raise ValueError(f"Nieoczekiwany kształt pred_array: {pred_array.shape}")
 
@@ -283,19 +317,27 @@ def create_historical_plot(config, ticker_data, original_close, median, ticker, 
     pred_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=config['model']['max_prediction_length'], freq='D')
     historical_dates = ticker_data['Date'].tolist()
     
-    full_data_dates = historical_close.index.tolist()
-    pred_start_idx = len(historical_dates)
-    pred_end_idx = pred_start_idx + len(median)
+    # Tworzenie pełnego zakresu dat dla okresu predykcji
+    pred_date_range = pd.DataFrame({'Date': pred_dates})
+    pred_date_range['Date'] = pd.to_datetime(pred_date_range['Date'], utc=True)
     
-    if pred_end_idx > len(full_data_dates):
-        logger.warning("Predykcje przekraczają dostępne dane historyczne. Przycinanie predykcji.")
-        median = median[:len(full_data_dates) - pred_start_idx]
-        pred_dates = pred_dates[:len(full_data_dates) - pred_start_idx]
-
-    all_dates = historical_dates + [d.to_pydatetime() for d in pred_dates]
-    all_close = original_close.tolist() + historical_close.iloc[pred_start_idx:pred_end_idx].tolist()
+    # Przygotowanie historycznych cen z wypełnieniem brakujących dat
+    historical_close = historical_close.reindex(pred_date_range['Date'], method='ffill')
+    
+    # Logowanie dla debugowania
+    logger.info(f"Długość historical_dates: {len(historical_dates)}")
+    logger.info(f"Długość pred_dates: {len(pred_dates)}")
+    logger.info(f"Długość original_close: {len(original_close)}")
+    logger.info(f"Długość historical_close po reindex: {len(historical_close)}")
+    logger.info(f"Długość median: {len(median)}")
+    
+    # Tworzenie tablic dla wykresu
+    all_dates = historical_dates + pred_date_range['Date'].tolist()
+    all_close = original_close.tolist() + historical_close.tolist()
     all_pred_close = [None] * len(historical_dates) + median.tolist()
 
+    # Sprawdzenie długości tablic
+    logger.info(f"Długość all_dates: {len(all_dates)}, all_close: {len(all_close)}, all_pred_close: {len(all_pred_close)}")
     if len(all_dates) != len(all_close) or len(all_dates) != len(all_pred_close):
         logger.error(f"Niezgodność długości: all_dates={len(all_dates)}, all_close={len(all_close)}, all_pred_close={len(all_pred_close)}")
         raise ValueError("Wszystkie tablice muszą mieć tę samą długość")
@@ -314,14 +356,14 @@ def create_historical_plot(config, ticker_data, original_close, median, ticker, 
         y=plot_data['Close'],
         mode='lines',
         name='Cena zamknięcia (historyczna)',
-        line=dict(color='blue')
+        line=dict(color='blue')  # Ciągła niebieska linia
     ))
     fig.add_trace(go.Scatter(
         x=plot_data['Date'],
         y=plot_data['Predicted_Close'],
         mode='lines',
         name='Przewidywana cena zamknięcia',
-        line=dict(color='orange', dash='dash')
+        line=dict(color='orange', dash='dash')  # Przerywana pomarańczowa linia
     ))
 
     split_date = pd.Timestamp(last_date).isoformat()
@@ -391,17 +433,40 @@ def main():
     elif page == "Porównanie predykcji z historią":
         if st.button("Porównaj predykcje z historią"):
             try:
-                trim_days = 90
-                new_data, dataset, normalizers, model = load_data_and_model(config, ticker_input, temp_raw_data_path, historical_mode=True, trim_days=trim_days)
-                ticker_data, original_close = preprocess_data(config, new_data, ticker_input, normalizers, historical_mode=True, trim_days=trim_days)
-                median, _, _ = generate_predictions(config, dataset, model, ticker_data)
+                # Pobierz max_prediction_length z konfiguracji
+                max_prediction_length = config['model']['max_prediction_length']
                 
+                # Ustaw datę początkową na dzisiaj - max_prediction_length - 365 dni
+                trim_date = pd.Timestamp(datetime.now(), tz='UTC') - pd.Timedelta(days=max_prediction_length)
+                start_date = trim_date - pd.Timedelta(days=365)
+                
+                # Pobierz dane historyczne
                 fetcher = DataFetcher(ConfigManager())
-                full_data = fetcher.fetch_stock_data(ticker_input, datetime.now() - pd.Timedelta(days=365), datetime.now())
+                full_data = fetcher.fetch_stock_data(ticker_input, start_date, datetime.now())
                 if full_data.empty:
                     raise ValueError("Brak pełnych danych historycznych")
+                
                 full_data = full_data[full_data['Ticker'] == ticker_input].copy()
                 full_data['Date'] = pd.to_datetime(full_data['Date'], utc=True)
+                
+                # Przytnij dane do trim_date dla predykcji
+                new_data = full_data[full_data['Date'] <= trim_date].copy()
+                if new_data.empty:
+                    raise ValueError(f"Brak danych przed {trim_date} dla {ticker_input}")
+                
+                new_data.to_csv(temp_raw_data_path, index=False)
+                logger.info(f"Dane dla {ticker_input} zapisane do {temp_raw_data_path}")
+                
+                # Wczytaj model i dataset
+                _, dataset, normalizers, model = load_data_and_model(config, ticker_input, temp_raw_data_path, historical_mode=True)
+                
+                # Preprocessuj dane
+                ticker_data, original_close = preprocess_data(config, new_data, ticker_input, normalizers, historical_mode=True)
+                
+                # Generuj predykcje
+                median, _, _ = generate_predictions(config, dataset, model, ticker_data)
+                
+                # Przygotuj dane historyczne do porównania
                 full_data.set_index('Date', inplace=True)
                 historical_close = full_data['Close']
                 

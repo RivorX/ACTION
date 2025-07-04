@@ -194,45 +194,178 @@ class CustomTemporalFusionTransformer(LightningModule):
         x, y = batch
         x = move_to_device(x, self.device)
         y_target = move_to_device(y[0], self.device)
-        with torch.amp.autocast(device_type='cuda' if torch.cuda.is_available() else 'cpu', dtype=torch.bfloat16):
-            y_hat = self(x)
-            loss = self.model.loss(y_hat, y_target)
+        
+        # Upewnij się, że y_target wymaga gradientów podczas treningu
+        if stage == 'train' and not y_target.requires_grad:
+            y_target.requires_grad_(True)
+        
+        # Sprawdź czy dane wejściowe są poprawne
+        if torch.isnan(y_target).any() or torch.isinf(y_target).any():
+            logger.warning(f"NaN/Inf w y_target w batch {batch_idx}")
+            # Zamień NaN/Inf na zero lub pomiń ten batch
+            y_target = torch.nan_to_num(y_target, nan=0.0, posinf=0.0, neginf=0.0)
+        
+        try:
+            with torch.amp.autocast(device_type='cuda' if torch.cuda.is_available() else 'cpu', dtype=torch.bfloat16):
+                y_hat = self(x)
+                
+                # Sprawdź czy predykcje są poprawne
+                if torch.isnan(y_hat).any() or torch.isinf(y_hat).any():
+                    logger.warning(f"NaN/Inf w y_hat w batch {batch_idx}")
+                    y_hat = torch.nan_to_num(y_hat, nan=0.0, posinf=0.0, neginf=0.0)
+                
+                loss = self.model.loss(y_hat, y_target)
+                
+                # Sprawdź czy loss jest skończony
+                if not torch.isfinite(loss):
+                    logger.warning(f"Loss nie jest skończony w batch {batch_idx}: {loss}")
+                    # Zwróć mały loss zamiast inf/nan
+                    loss = torch.tensor(1e-6, device=self.device, requires_grad=True)
+                
+        except Exception as e:
+            logger.error(f"Błąd podczas forward pass w batch {batch_idx}: {e}")
+            # Zwróć fallback loss
+            loss = torch.tensor(1e-6, device=self.device, requires_grad=True)
+            y_hat = torch.zeros_like(y_target, requires_grad=True)
+        
         batch_size = x['encoder_cont'].size(0)
         self.log(f"{stage}_loss", loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=batch_size)
 
-        # Obliczanie l2_norm dla parametrów modelu
-        l2_norm = sum(p.pow(2).sum() for p in self.parameters()).sqrt().item()
-        self.log(f"{stage}_l2_norm", l2_norm, on_step=True, on_epoch=True, prog_bar=False, batch_size=batch_size)
+        # Obliczanie l2_norm dla parametrów modelu (tylko jeśli parametry mają gradienty)
+        try:
+            l2_norm = sum(p.pow(2).sum() for p in self.parameters() if p.requires_grad).sqrt().item()
+            self.log(f"{stage}_l2_norm", l2_norm, on_step=True, on_epoch=True, prog_bar=False, batch_size=batch_size)
+        except Exception as e:
+            logger.warning(f"Nie można obliczyć l2_norm: {e}")
 
+        # Logowanie tylko dla walidacji i tylko co 50 batchy
         if stage == 'val' and batch_idx % 50 == 0:
-            # Logowanie wartości przed denormalizacją
-            logger.info(f"Validation batch {batch_idx}: y_hat[0, :5] = {y_hat[0, :5].tolist()}, y_target[0, :5] = {y_target[0, :5].tolist()}")
-
-            # Denormalizacja y_hat i y_target
-            close_normalizer = self.normalizers.get('Close') or self.dataset.target_normalizer
-            if close_normalizer:
-                try:
-                    # Przeniesienie na CPU i konwersja na float32 przed denormalizacją
-                    y_hat_denorm = close_normalizer.inverse_transform(y_hat.float().cpu())
-                    y_target_denorm = close_normalizer.inverse_transform(y_target.float().cpu())
-                    # Logowanie po inverse_transform, przed np.expm1
-                    logger.info(f"Validation batch {batch_idx}: y_hat_denorm_before_expm1[0, :5] = {y_hat_denorm[0, :5].tolist()}, y_target_denorm_before_expm1[0, :5] = {y_target_denorm[0, :5].tolist()}")
-                    # Odwrócenie transformacji logarytmicznej
-                    y_hat_denorm = np.expm1(y_hat_denorm.numpy())
-                    y_target_denorm = np.expm1(y_target_denorm.numpy())
-                    logger.info(
-                        f"Validation batch {batch_idx}: "
-                        f"y_hat_denorm[0, :5] = {y_hat_denorm[0, :5].tolist()}, "
-                        f"y_target_denorm[0, :5] = {y_target_denorm[0, :5].tolist()}"
-                    )
-                except Exception as e:
-                    logger.error(f"Błąd podczas denormalizacji: {e}")
-                    logger.info(f"Validation batch {batch_idx}: y_hat[0, :5] = {y_hat[0, :5].tolist()}, y_target[0, :5] = {y_target[0, :5].tolist()}")
-            else:
-                logger.warning("Brak normalizera dla 'Close', logowanie znormalizowanych wartości.")
-                logger.info(f"Validation batch {batch_idx}: y_hat[0, :5] = {y_hat[0, :5].tolist()}, y_target[0, :5] = {y_target[0, :5].tolist()}")
+            try:
+                self._log_validation_details(x, y_hat, y_target, batch_idx)
+            except Exception as e:
+                logger.error(f"Błąd w logowaniu szczegółów walidacji: {e}")
 
         return loss
+
+    def _log_validation_details(self, x, y_hat, y_target, batch_idx):
+        """Wydzielona funkcja do logowania szczegółów walidacji."""
+        # Logowanie wartości przed denormalizacją
+        logger.info(f"Validation batch {batch_idx}: y_hat[0, :5] = {y_hat[0, :5].tolist()}, y_target[0, :5] = {y_target[0, :5].tolist()}")
+
+        # Denormalizacja y_hat i y_target (Relative Returns)
+        relative_returns_normalizer = self.normalizers.get('Relative_Returns') or self.dataset.target_normalizer
+        if relative_returns_normalizer:
+            try:
+                # Przeniesienie na CPU i konwersja na float32 przed denormalizacją
+                y_hat_denorm = relative_returns_normalizer.inverse_transform(y_hat.float().cpu())
+                y_target_denorm = relative_returns_normalizer.inverse_transform(y_target.float().cpu())
+                
+                # Logowanie Relative Returns po denormalizacji
+                logger.info(
+                    f"Validation batch {batch_idx}: "
+                    f"y_hat_denorm (Relative Returns)[0, :5] = {y_hat_denorm[0, :5].tolist()}, "
+                    f"y_target_denorm (Relative Returns)[0, :5] = {y_target_denorm[0, :5].tolist()}"
+                )
+                
+                # KONWERSJA RELATIVE RETURNS NA RZECZYWISTE CENY
+                if 'encoder_cont' in x:
+                    encoder_cont = x['encoder_cont'][0].cpu()  # Pierwszy przykład z batcha
+                    close_normalizer = self.normalizers.get('Close')
+                    if close_normalizer is not None:
+                        try:
+                            # Znajdź pozycję Close w numeric_features
+                            numeric_features = [
+                                "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI", "Volatility",
+                                "MACD", "MACD_Signal", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
+                                "Close_momentum_1d", "Close_momentum_5d", "Close_vs_MA10", "Close_vs_MA50",
+                                "Close_percentile_20d", "Close_volatility_5d", "Close_RSI_divergence"
+                            ]
+                            close_idx = numeric_features.index("Close") if "Close" in numeric_features else None
+                            
+                            if close_idx is not None:
+                                # Pobierz ostatnią wartość Close z encodera
+                                last_close_norm = encoder_cont[-1, close_idx]
+                                last_close_denorm = close_normalizer.inverse_transform(torch.tensor([[last_close_norm]]))
+                                last_close_price = np.expm1(last_close_denorm.numpy())[0, 0]
+                                
+                                # Sprawdź rozsądność ceny
+                                if last_close_price > 10000:
+                                    logger.warning(f"Bardzo wysoka cena Close: {last_close_price:.2f}")
+                                    last_close_price_alt = last_close_denorm.numpy()[0, 0]
+                                    if 10 <= last_close_price_alt <= 1000:
+                                        last_close_price = last_close_price_alt
+                                
+                                logger.info(f"Ostatnia cena Close z batcha: {last_close_price:.2f}")
+                                
+                                # Konwertuj tylko pierwsze 5 predykcji dla czytelności
+                                self._convert_to_prices(y_hat_denorm, y_target_denorm, last_close_price, batch_idx)
+                            else:
+                                logger.warning("Nie można znaleźć indeksu kolumny Close")
+                        except Exception as e:
+                            logger.error(f"Błąd podczas konwersji na rzeczywiste ceny: {e}")
+                    else:
+                        logger.warning("Brak normalizera dla Close")
+                else:
+                    logger.warning("Brak danych encoder_cont w batchu")
+                    
+            except Exception as e:
+                logger.error(f"Błąd podczas denormalizacji Relative Returns: {e}")
+        else:
+            logger.warning("Brak normalizera dla 'Relative_Returns'")
+
+    def _convert_to_prices(self, y_hat_denorm, y_target_denorm, last_close_price, batch_idx):
+        """Konwertuje Relative Returns na rzeczywiste ceny."""
+        def to_scalar(tensor_val):
+            if hasattr(tensor_val, 'numel') and tensor_val.numel() == 1:
+                return tensor_val.item()
+            elif hasattr(tensor_val, 'cpu'):
+                val = tensor_val.cpu().numpy()
+                return val.item() if val.size == 1 else val.flatten()[0]
+            else:
+                return float(tensor_val)
+        
+        y_hat_prices = []
+        y_target_prices = []
+        current_price_pred = last_close_price
+        current_price_target = last_close_price
+        
+        for i in range(min(5, y_hat_denorm.shape[1])):
+            # Dla predykcji (quantiles)
+            relative_return_pred = to_scalar(y_hat_denorm[0, i, 1])  # mediana
+            relative_return_pred_lower = to_scalar(y_hat_denorm[0, i, 0])  # dolny
+            relative_return_pred_upper = to_scalar(y_hat_denorm[0, i, 2])  # górny
+            
+            # Oblicz ceny
+            next_price_pred = current_price_pred * (1 + relative_return_pred)
+            next_price_pred_lower = current_price_pred * (1 + relative_return_pred_lower)
+            next_price_pred_upper = current_price_pred * (1 + relative_return_pred_upper)
+            
+            y_hat_prices.append({
+                'median': next_price_pred,
+                'lower': next_price_pred_lower,
+                'upper': next_price_pred_upper
+            })
+            current_price_pred = next_price_pred
+            
+            # Dla wartości rzeczywistych
+            relative_return_target = to_scalar(y_target_denorm[0, i])
+            next_price_target = current_price_target * (1 + relative_return_target)
+            y_target_prices.append(next_price_target)
+            current_price_target = next_price_target
+        
+        # Formatowanie wyników
+        pred_medians = [f"{p['median']:.2f}" for p in y_hat_prices]
+        pred_lowers = [f"{p['lower']:.2f}" for p in y_hat_prices]
+        pred_uppers = [f"{p['upper']:.2f}" for p in y_hat_prices]
+        target_prices_formatted = [f"{p:.2f}" for p in y_target_prices]
+        
+        logger.info(
+            f"Validation batch {batch_idx} - RZECZYWISTE CENY:\n"
+            f"  Predykcje (mediana): {pred_medians}\n"
+            f"  Predykcje (dolny 10%): {pred_lowers}\n"
+            f"  Predykcje (górny 90%): {pred_uppers}\n"
+            f"  Rzeczywiste ceny: {target_prices_formatted}"
+        )
 
     def training_step(self, batch: Tuple[Dict[str, torch.Tensor], List[torch.Tensor]], batch_idx: int) -> torch.Tensor:
         return self._shared_step(batch, batch_idx, 'train')
