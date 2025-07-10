@@ -1,0 +1,15 @@
+tickers:
+  poland:
+    - 'FOR.WA'    # Forbo
+    - 'MRC.WA'    # Mirbud
+  europe:
+    - 'OR.PA'     # L'Oréal
+    - 'CS.PA'     # AXA
+  usa:
+    - 'BA'        # Boeing
+    - 'CAT'       # Caterpillar
+  global:
+    - 'FMX'       # FEMSA
+    - 'TATAMOTORS.NS' # Tata Motors
+    - 'NSRGY'     # Nestlé
+    - 'SQM'       # Sociedad Química y Minera de Chile

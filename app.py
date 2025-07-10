@@ -1,18 +1,15 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from pytorch_forecasting import TimeSeriesDataSet, metrics
-from scripts.model import build_model
-from scripts.preprocessor import DataPreprocessor
 import torch
 import yaml
 import plotly.graph_objs as go
 import logging
 from datetime import datetime, timedelta
-import pickle
 import os
 from scripts.data_fetcher import DataFetcher
 from scripts.config_manager import ConfigManager
+from scripts.prediction_engine import load_data_and_model, preprocess_data, generate_predictions
 
 # Konfiguracja logowania
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -51,176 +48,6 @@ def load_tickers_and_names():
         st.error("Błąd wczytywania listy tickerów lub nazw firm.")
         return {}
 
-def load_data_and_model(config, ticker, temp_raw_data_path, historical_mode=False, trim_days=0):
-    """Wczytuje dane i model na podstawie tickera oraz porównuje parametry normalizerów."""
-    fetcher = DataFetcher(ConfigManager())
-    start_date = pd.Timestamp(datetime.now(), tz='UTC') - pd.Timedelta(days=365 + trim_days)
-    new_data = fetcher.fetch_stock_data(ticker, start_date, datetime.now())
-    if new_data.empty:
-        logger.error(f"Nie udało się pobrać danych dla {ticker}")
-        st.error(f"Nie udało się pobrać danych dla {ticker}")
-        raise ValueError("Brak danych")
-
-    new_data.to_csv(temp_raw_data_path, index=False)
-    logger.info(f"Dane dla {ticker} zapisane do {temp_raw_data_path}")
-
-    try:
-        dataset = torch.load(config['data']['processed_data_path'], weights_only=False, map_location=torch.device('cpu'))
-        logger.info("Dataset wczytany poprawnie.")
-    except Exception as e:
-        logger.error(f"Błąd wczytywania datasetu: {e}")
-        st.error("Błąd wczytywania danych.")
-        raise
-
-    try:
-        with open(config['data']['normalizers_path'], 'rb') as f:
-            normalizers = pickle.load(f)
-        logger.info(f"Wczytano normalizery z: {config['data']['normalizers_path']}")
-    except Exception as e:
-        logger.error(f"Błąd wczytywania normalizerów: {e}")
-        st.error("Błąd wczytywania normalizerów.")
-        raise
-
-    # Porównanie parametrów normalizerów - ZAKTUALIZOWANE dla Relative_Returns
-    try:
-        relative_returns_normalizer_params = normalizers['Relative_Returns'].get_parameters() if 'Relative_Returns' in normalizers else {}
-        target_normalizer_params = dataset.target_normalizer.get_parameters()
-        logger.info(f"Parametry normalizera dla Relative_Returns (normalizers.pkl): {relative_returns_normalizer_params}")
-        logger.info(f"Parametry normalizera dla target (dataset.target_normalizer): {target_normalizer_params}")
-        # Poprawione porównanie
-        if not torch.allclose(relative_returns_normalizer_params, target_normalizer_params, rtol=1e-5, atol=1e-8):
-            logger.warning("Normalizery dla Relative_Returns różnią się! Może to powodować błędy w predykcjach.")
-        else:
-            logger.info("Normalizery dla Relative_Returns są zgodne.")
-    except Exception as e:
-        logger.error(f"Błąd podczas porównywania normalizerów: {e}")
-
-    try:
-        checkpoint = torch.load(config['paths']['checkpoint_path'], map_location=torch.device('cpu'), weights_only=False)
-        hyperparams = checkpoint["hyperparams"]
-        if 'hidden_continuous_size' not in hyperparams:
-            hyperparams['hidden_continuous_size'] = config['model']['hidden_size'] // 2
-        model = build_model(dataset, config, hyperparams=hyperparams)
-        model.load_state_dict(checkpoint["state_dict"])
-        model.eval()
-        model.to('cpu')
-        logger.info("Model wczytany poprawnie.")
-    except Exception as e:
-        logger.error(f"Błąd wczytywania modelu: {e}")
-        st.error(f"Błąd wczytywania modelu: {e}")
-        raise
-
-    return new_data, dataset, normalizers, model
-
-def preprocess_data(config, ticker_data, ticker, normalizers, historical_mode=False, trim_days=0):
-    """Preprocessuje dane dla wybranego tickera z logowaniem wartości przed i po normalizacji."""
-    ticker_data = ticker_data[ticker_data['Ticker'] == ticker].copy().reset_index(drop=True)
-    ticker_data['Date'] = pd.to_datetime(ticker_data['Date'], utc=True)
-    
-    original_close = ticker_data['Close'].copy()
-    if historical_mode and trim_days > 0:
-        ticker_data = ticker_data.iloc[:-trim_days].copy()
-        original_close = original_close.iloc[:-trim_days].copy()
-    
-    preprocessor = DataPreprocessor(config)
-    ticker_data = preprocessor.feature_engineer.add_features(ticker_data)
-    ticker_data = ticker_data.dropna(subset=['Close', 'Open', 'High', 'Low', 'Volume'])
-    ticker_data = ticker_data[(ticker_data['Close'] > 0) & (ticker_data['High'] >= ticker_data['Low'])]
-    ticker_data['time_idx'] = range(len(ticker_data))
-    ticker_data['group_id'] = ticker
-
-    # Transformacja logarytmiczna - USUNIĘTO BB cechy
-    log_features = ["Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "ATR"]
-    for feature in log_features:
-        if feature in ticker_data.columns:
-            ticker_data[feature] = np.log1p(ticker_data[feature].clip(lower=0))
-
-    # Normalizacja - ZAKTUALIZOWANA LISTA CECH
-    numeric_features = [
-        "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI", "Volatility",
-        "MACD", "MACD_Signal", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
-        "Close_momentum_1d", "Close_momentum_5d", "Close_vs_MA10", "Close_vs_MA50",
-        "Close_percentile_20d", "Close_volatility_5d", "Close_RSI_divergence",
-        "Relative_Returns", "Log_Returns", "Future_Volume", "Future_Volatility"
-    ]
-    for feature in numeric_features:
-        if feature in ticker_data.columns and feature in normalizers:
-            ticker_data[feature] = normalizers[feature].transform(ticker_data[feature].values)
-
-    categorical_columns = ['Day_of_Week', 'Month']
-    for cat_col in categorical_columns:
-        if cat_col in ticker_data.columns:
-            ticker_data[cat_col] = ticker_data[cat_col].astype(str)
-
-    logger.info(f"Kolumny ticker_data: {ticker_data.columns.tolist()}")
-    return ticker_data, original_close
-
-def generate_predictions(config, dataset, model, ticker_data):
-    """Generuje predykcje dla podanych danych."""
-    ticker_dataset = TimeSeriesDataSet.from_parameters(
-        dataset.get_parameters(),
-        ticker_data,
-        predict_mode=True,
-        max_prediction_length=config['model']['max_prediction_length']
-    ).to_dataloader(train=False, batch_size=1, num_workers=4)
-
-    with torch.no_grad():
-        predictions = model.predict(ticker_dataset, mode="quantiles", return_x=True)
-    logger.info(f"Kształt predictions.output: {predictions.output.shape}")
-
-    pred_array = predictions.output.to('cpu')
-    target_normalizer = dataset.target_normalizer
-    logger.info(f"Predykcje Relative Returns przed denormalizacją (pierwsze 5 dla mediany): {pred_array[0, :5, 1].tolist()}")
-    
-    # Denormalizacja Relative Returns
-    pred_array = target_normalizer.inverse_transform(pred_array)
-    logger.info(f"Predykcje Relative Returns po denormalizacji (pierwsze 5 dla mediany): {pred_array[0, :5, 1].tolist()}")
-    
-    # Konwersja Relative Returns na ceny Close
-    last_close_price = ticker_data['Close'].iloc[-1]
-    logger.info(f"Ostatnia cena Close (znormalizowana): {last_close_price}")
-    
-    try:
-        with open(config['data']['normalizers_path'], 'rb') as f:
-            normalizers = pickle.load(f)
-        close_normalizer = normalizers.get('Close', target_normalizer)
-    except:
-        close_normalizer = target_normalizer
-    
-    last_close_denorm = close_normalizer.inverse_transform(torch.tensor([[last_close_price]]).float())
-    last_close_denorm = np.expm1(last_close_denorm.numpy())[0, 0]
-    logger.info(f"Ostatnia cena Close (denormalizowana): {last_close_denorm}")
-    
-    if len(pred_array.shape) == 3:
-        relative_returns_median = pred_array[0, :, 1]
-        relative_returns_lower = pred_array[0, :, 0]  
-        relative_returns_upper = pred_array[0, :, 2]
-        
-        current_price = last_close_denorm
-        median = []
-        lower_bound = []
-        upper_bound = []
-        
-        for i in range(len(relative_returns_median)):
-            price_median = current_price * (1 + relative_returns_median[i])
-            price_lower = current_price * (1 + relative_returns_lower[i])
-            price_upper = current_price * (1 + relative_returns_upper[i])
-            
-            median.append(price_median)
-            lower_bound.append(price_lower)
-            upper_bound.append(price_upper)
-            
-            current_price = price_median
-        
-        median = np.array(median)
-        lower_bound = np.array(lower_bound)
-        upper_bound = np.array(upper_bound)
-    else:
-        raise ValueError(f"Nieoczekiwany kształt pred_array: {pred_array.shape}")
-
-    logger.info(f"Przewidywane ceny (pierwsze 5 dla mediany): {median[:5].tolist()}")
-    return median, lower_bound, upper_bound
-
 def create_plot(config, ticker_data, original_close, median, lower_bound, upper_bound, ticker):
     """Tworzy wykres cen i predykcji."""
     last_date = ticker_data['Date'].iloc[-1].to_pydatetime()
@@ -231,6 +58,7 @@ def create_plot(config, ticker_data, original_close, median, lower_bound, upper_
     all_close = original_close.tolist() + median.tolist()
     all_lower_bound = [None] * len(original_close) + lower_bound.tolist()
     all_upper_bound = [None] * len(original_close) + upper_bound.tolist()
+    
     plot_data = pd.DataFrame({
         'Date': all_dates,
         'Close': all_close,
@@ -246,7 +74,7 @@ def create_plot(config, ticker_data, original_close, median, lower_bound, upper_
         y=plot_data['Close'],
         mode='lines',
         name='Cena zamknięcia (historyczna i przewidywana)',
-        line=dict(color='blue')
+        line=dict(color='#0000FF')
     ))
     fig.add_trace(go.Scatter(
         x=plot_data['Date'],
@@ -292,7 +120,11 @@ def create_plot(config, ticker_data, original_close, median, lower_bound, upper_
         xaxis_title="Data",
         yaxis_title="Cena zamknięcia",
         showlegend=True,
-        xaxis=dict(rangeslider=dict(visible=True), type='date')
+        xaxis=dict(rangeslider=dict(visible=True), type='date'),
+        legend=dict(
+            itemclick="toggle",
+            itemdoubleclick="toggleothers"
+        )
     )
 
     st.plotly_chart(fig, use_container_width=True)
@@ -311,32 +143,26 @@ def create_plot(config, ticker_data, original_close, median, lower_bound, upper_
         'Górny kwantyl (90%)': '{:.2f}'
     }))
 
-def create_historical_plot(config, ticker_data, original_close, median, ticker, historical_close):
+def create_historical_plot(config, ticker_data, original_close, median, lower_bound, upper_bound, ticker, historical_close):
     """Tworzy wykres porównujący predykcje z historią."""
     last_date = ticker_data['Date'].iloc[-1].to_pydatetime()
     pred_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=config['model']['max_prediction_length'], freq='D')
     historical_dates = ticker_data['Date'].tolist()
     
-    # Tworzenie pełnego zakresu dat dla okresu predykcji
     pred_date_range = pd.DataFrame({'Date': pred_dates})
     pred_date_range['Date'] = pd.to_datetime(pred_date_range['Date'], utc=True)
-    
-    # Przygotowanie historycznych cen z wypełnieniem brakujących dat
     historical_close = historical_close.reindex(pred_date_range['Date'], method='ffill')
     
-    # Logowanie dla debugowania
     logger.info(f"Długość historical_dates: {len(historical_dates)}")
     logger.info(f"Długość pred_dates: {len(pred_dates)}")
     logger.info(f"Długość original_close: {len(original_close)}")
     logger.info(f"Długość historical_close po reindex: {len(historical_close)}")
     logger.info(f"Długość median: {len(median)}")
     
-    # Tworzenie tablic dla wykresu
     all_dates = historical_dates + pred_date_range['Date'].tolist()
     all_close = original_close.tolist() + historical_close.tolist()
     all_pred_close = [None] * len(historical_dates) + median.tolist()
-
-    # Sprawdzenie długości tablic
+    
     logger.info(f"Długość all_dates: {len(all_dates)}, all_close: {len(all_close)}, all_pred_close: {len(all_pred_close)}")
     if len(all_dates) != len(all_close) or len(all_dates) != len(all_pred_close):
         logger.error(f"Niezgodność długości: all_dates={len(all_dates)}, all_close={len(all_close)}, all_pred_close={len(all_pred_close)}")
@@ -356,14 +182,34 @@ def create_historical_plot(config, ticker_data, original_close, median, ticker, 
         y=plot_data['Close'],
         mode='lines',
         name='Cena zamknięcia (historyczna)',
-        line=dict(color='blue')  # Ciągła niebieska linia
+        line=dict(color='#0000FF')
     ))
     fig.add_trace(go.Scatter(
         x=plot_data['Date'],
         y=plot_data['Predicted_Close'],
         mode='lines',
         name='Przewidywana cena zamknięcia',
-        line=dict(color='orange', dash='dash')  # Przerywana pomarańczowa linia
+        line=dict(color='#FFA500', dash='dash')
+    ))
+
+    # Dodanie kwantyli z przekazanych danych
+    all_lower_bound = [None] * len(historical_dates) + lower_bound.tolist()
+    all_upper_bound = [None] * len(historical_dates) + upper_bound.tolist()
+    fig.add_trace(go.Scatter(
+        x=plot_data['Date'],
+        y=all_upper_bound,
+        mode='lines',
+        name='Górny kwantyl (90%)',
+        line=dict(color='rgba(255, 165, 0, 0.3)', dash='dash')
+    ))
+    fig.add_trace(go.Scatter(
+        x=plot_data['Date'],
+        y=all_lower_bound,
+        mode='lines',
+        name='Dolny kwantyl (10%)',
+        line=dict(color='rgba(255, 165, 0, 0.3)', dash='dash'),
+        fill='tonexty',
+        fillcolor='rgba(255, 165, 0, 0.1)'
     ))
 
     split_date = pd.Timestamp(last_date).isoformat()
@@ -393,10 +239,148 @@ def create_historical_plot(config, ticker_data, original_close, median, ticker, 
         xaxis_title="Data",
         yaxis_title="Cena zamknięcia",
         showlegend=True,
-        xaxis=dict(rangeslider=dict(visible=True), type='date')
+        xaxis=dict(rangeslider=dict(visible=True), type='date'),
+        legend=dict(
+            itemclick="toggle",
+            itemdoubleclick="toggleothers"
+        )
     )
 
     st.plotly_chart(fig, use_container_width=True)
+
+def create_benchmark_plot(config, benchmark_tickers, historical_close_dict):
+    """Tworzy wykres benchmarku dla wszystkich spółek z możliwością wyboru widoczności w legendzie."""
+    all_results = {}
+    temp_raw_data_path = 'data/temp_benchmark_data.csv'
+    accuracy_scores = {}
+    
+    for ticker in benchmark_tickers:
+        try:
+            new_data, dataset, normalizers, model = load_data_and_model(config, ticker, temp_raw_data_path, historical_mode=True)
+            ticker_data, original_close = preprocess_data(config, new_data, ticker, normalizers, historical_mode=True)
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            with torch.no_grad():
+                median, _, _ = generate_predictions(config, dataset, model, ticker_data)
+            last_date = ticker_data['Date'].iloc[-1].to_pydatetime()
+            pred_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=config['model']['max_prediction_length'], freq='D')
+            
+            # Poprawione dane historyczne
+            historical_data = historical_close_dict[ticker].loc[:last_date].reindex(ticker_data['Date'], method='ffill')
+            historical_close = historical_close_dict[ticker].reindex(pd.to_datetime(pred_dates), method='ffill')
+            
+            if len(median) == len(historical_close):
+                differences = np.abs(median - historical_close)
+                relative_diff = (differences / historical_close) * 100
+                accuracy = 100 - np.mean(relative_diff)
+                accuracy_scores[ticker] = accuracy
+                logger.info(f"Procentowa zgodność dla {ticker}: {accuracy:.2f}%")
+            else:
+                logger.warning(f"Niezgodna długość predykcji i danych historycznych dla {ticker}")
+                accuracy_scores[ticker] = 0.0
+            
+            all_results[ticker] = {
+                'historical_dates': ticker_data['Date'].tolist(),
+                'historical_close': historical_data.tolist(),
+                'pred_dates': [d.to_pydatetime() for d in pred_dates],
+                'predictions': median.tolist(),
+                'historical_pred_close': historical_close.tolist()
+            }
+        except Exception as e:
+            logger.error(f"Błąd podczas przetwarzania {ticker}: {e}")
+            accuracy_scores[ticker] = 0.0
+        finally:
+            if os.path.exists(temp_raw_data_path):
+                os.remove(temp_raw_data_path)
+                logger.info(f"Tymczasowy plik {temp_raw_data_path} usunięty.")
+
+    fig = go.Figure()
+    colors = ['#0000FF', '#00FF00', '#FF0000', '#800080', '#FFA500', '#00FFFF', '#FF00FF', '#FFFF00', '#A52A2A', '#808080']
+    for idx, (ticker, data) in enumerate(all_results.items()):
+        color_idx = idx % len(colors)
+        # Linia ciągła dla predykcji
+        fig.add_trace(go.Scatter(
+            x=data['pred_dates'],
+            y=data['predictions'],
+            mode='lines',
+            name=f'{ticker} (Predykcja)',
+            line=dict(color=colors[color_idx]),
+            legendgroup=ticker
+        ))
+        # Linia przerywana dla danych historycznych
+        fig.add_trace(go.Scatter(
+            x=data['historical_dates'],
+            y=data['historical_close'],
+            mode='lines',
+            name=f'{ticker} (Historia)',
+            line=dict(color=colors[color_idx], dash='dash'),
+            legendgroup=ticker
+        ))
+
+    fig.update_layout(
+        title="Benchmark predykcji z historią dla wszystkich spółek",
+        xaxis_title="Data",
+        yaxis_title="Cena zamknięcia",
+        showlegend=True,
+        xaxis=dict(rangeslider=dict(visible=True), type='date'),
+        legend=dict(
+            itemclick="toggle",
+            itemdoubleclick="toggleothers"
+        )
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.subheader("Procentowa zgodność predykcji z historią")
+    for ticker, accuracy in accuracy_scores.items():
+        st.write(f"{ticker}: {accuracy:.2f}%")
+
+    return accuracy_scores
+
+def save_benchmark_to_csv(benchmark_date, accuracy_scores):
+    """Zapisuje wyniki benchmarku do pliku CSV z historią."""
+    csv_file = 'data/benchmarks_history.csv'  # Zapis do katalogu data
+    average_accuracy = np.mean(list(accuracy_scores.values())) if accuracy_scores else 0.0
+    
+    new_data = {'Date': [benchmark_date], **{ticker: [accuracy] for ticker, accuracy in accuracy_scores.items()}, 'Average_Accuracy': [average_accuracy]}
+    new_df = pd.DataFrame(new_data)
+    
+    if os.path.exists(csv_file):
+        existing_df = pd.read_csv(csv_file, dtype=str)
+        updated_df = pd.concat([existing_df, new_df], ignore_index=True)
+    else:
+        updated_df = new_df
+    
+    updated_df.to_csv(csv_file, index=False)
+    logger.info(f"Wyniki benchmarku zapisane do {csv_file}")
+
+def load_benchmark_history(benchmark_tickers):
+    """Wczytuje historię benchmarków z pliku CSV."""
+    csv_file = 'data/benchmarks_history.csv'  # Wczytywanie z katalogu data
+    if os.path.exists(csv_file):
+        df = pd.read_csv(csv_file, dtype=str)  # Wczytywanie wszystkiego jako stringi
+        # Uzupełnij brakujące kolumny tickerami z zerami jako stringami
+        missing_tickers = [t for t in benchmark_tickers if t not in df.columns]
+        for ticker in missing_tickers:
+            df[ticker] = '0.0'
+        # Zwracamy czysty DataFrame
+        return df[['Date'] + benchmark_tickers + ['Average_Accuracy']].fillna('0.0')
+    return pd.DataFrame(columns=['Date'] + benchmark_tickers + ['Average_Accuracy']).fillna('0.0')
+
+def load_benchmark_tickers():
+    """Wczytuje listę tickerów dla benchmarku z pliku YAML."""
+    try:
+        config = ConfigManager()
+        benchmark_tickers_file = 'config/benchmark_tickers.yaml'
+        with open(benchmark_tickers_file, 'r') as f:
+            tickers_config = yaml.safe_load(f)
+            all_tickers = []
+            for region in tickers_config['tickers'].values():
+                all_tickers.extend(region)
+            return list(dict.fromkeys(all_tickers))  # Usuwa duplikaty
+    except Exception as e:
+        logger.error(f"Błąd wczytywania benchmark_tickers.yaml: {e}")
+        st.error("Błąd wczytywania listy tickerów dla benchmarku.")
+        return []
 
 def main():
     """Główna funkcja aplikacji Streamlit."""
@@ -406,24 +390,29 @@ def main():
     config = load_config()
     temp_raw_data_path = 'data/temp_stock_data.csv'
 
-    ticker_options = load_tickers_and_names()
-    default_ticker = "AAPL" if "AAPL" in ticker_options else (list(ticker_options.keys())[0] if ticker_options else "AAPL")
+    # Lista tickerów dla benchmarku z nowego pliku
+    benchmark_tickers = load_benchmark_tickers()
 
-    ticker_option = st.selectbox(
-        "Wybierz spółkę z listy lub wpisz własną:",
-        options=["Wpisz ręcznie"] + list(ticker_options.values()),
-        index=0 if not default_ticker in ticker_options else list(ticker_options.values()).index(ticker_options[default_ticker]) + 1
-    )
-    ticker_input = st.text_input("Wpisz ticker spółki (np. AAPL, CDR.WA):", value=default_ticker if ticker_option == "Wpisz ręcznie" else [k for k, v in ticker_options.items() if v == ticker_option][0])
-
-    page = st.sidebar.selectbox("Wybierz stronę", ["Predykcje przyszłości", "Porównanie predykcji z historią"])
+    page = st.sidebar.selectbox("Wybierz stronę", ["Predykcje przyszłości", "Porównanie predykcji z historią", "Benchmark"])
 
     if page == "Predykcje przyszłości":
+        ticker_options = load_tickers_and_names()
+        default_ticker = "AAPL" if "AAPL" in ticker_options else (list(ticker_options.keys())[0] if ticker_options else "AAPL")
+
+        ticker_option = st.selectbox(
+            "Wybierz spółkę z listy lub wpisz własną:",
+            options=["Wpisz ręcznie"] + list(ticker_options.values()),
+            index=0 if not default_ticker in ticker_options else list(ticker_options.values()).index(ticker_options[default_ticker]) + 1
+        )
+        ticker_input = st.text_input("Wpisz ticker spółki (np. AAPL, CDR.WA):", value=default_ticker if ticker_option == "Wpisz ręcznie" else [k for k, v in ticker_options.items() if v == ticker_option][0])
+
         if st.button("Generuj predykcje"):
             try:
                 new_data, dataset, normalizers, model = load_data_and_model(config, ticker_input, temp_raw_data_path)
                 ticker_data, original_close = preprocess_data(config, new_data, ticker_input, normalizers)
-                median, lower_bound, upper_bound = generate_predictions(config, dataset, model, ticker_data)
+                device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+                with torch.no_grad():
+                    median, lower_bound, upper_bound = generate_predictions(config, dataset, model, ticker_data)
                 create_plot(config, ticker_data, original_close, median, lower_bound, upper_bound, ticker_input)
             finally:
                 if os.path.exists(temp_raw_data_path):
@@ -431,16 +420,22 @@ def main():
                     logger.info(f"Tymczasowy plik {temp_raw_data_path} usunięty.")
 
     elif page == "Porównanie predykcji z historią":
+        ticker_options = load_tickers_and_names()
+        default_ticker = "AAPL" if "AAPL" in ticker_options else (list(ticker_options.keys())[0] if ticker_options else "AAPL")
+
+        ticker_option = st.selectbox(
+            "Wybierz spółkę z listy lub wpisz własną:",
+            options=["Wpisz ręcznie"] + list(ticker_options.values()),
+            index=0 if not default_ticker in ticker_options else list(ticker_options.values()).index(ticker_options[default_ticker]) + 1
+        )
+        ticker_input = st.text_input("Wpisz ticker spółki (np. AAPL, CDR.WA):", value=default_ticker if ticker_option == "Wpisz ręcznie" else [k for k, v in ticker_options.items() if v == ticker_option][0])
+
         if st.button("Porównaj predykcje z historią"):
             try:
-                # Pobierz max_prediction_length z konfiguracji
                 max_prediction_length = config['model']['max_prediction_length']
-                
-                # Ustaw datę początkową na dzisiaj - max_prediction_length - 365 dni
                 trim_date = pd.Timestamp(datetime.now(), tz='UTC') - pd.Timedelta(days=max_prediction_length)
                 start_date = trim_date - pd.Timedelta(days=365)
                 
-                # Pobierz dane historyczne
                 fetcher = DataFetcher(ConfigManager())
                 full_data = fetcher.fetch_stock_data(ticker_input, start_date, datetime.now())
                 if full_data.empty:
@@ -448,8 +443,6 @@ def main():
                 
                 full_data = full_data[full_data['Ticker'] == ticker_input].copy()
                 full_data['Date'] = pd.to_datetime(full_data['Date'], utc=True)
-                
-                # Przytnij dane do trim_date dla predykcji
                 new_data = full_data[full_data['Date'] <= trim_date].copy()
                 if new_data.empty:
                     raise ValueError(f"Brak danych przed {trim_date} dla {ticker_input}")
@@ -457,24 +450,57 @@ def main():
                 new_data.to_csv(temp_raw_data_path, index=False)
                 logger.info(f"Dane dla {ticker_input} zapisane do {temp_raw_data_path}")
                 
-                # Wczytaj model i dataset
                 _, dataset, normalizers, model = load_data_and_model(config, ticker_input, temp_raw_data_path, historical_mode=True)
-                
-                # Preprocessuj dane
                 ticker_data, original_close = preprocess_data(config, new_data, ticker_input, normalizers, historical_mode=True)
+                device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+                with torch.no_grad():
+                    median, lower_bound, upper_bound = generate_predictions(config, dataset, model, ticker_data)
                 
-                # Generuj predykcje
-                median, _, _ = generate_predictions(config, dataset, model, ticker_data)
-                
-                # Przygotuj dane historyczne do porównania
                 full_data.set_index('Date', inplace=True)
                 historical_close = full_data['Close']
-                
-                create_historical_plot(config, ticker_data, original_close, median, ticker_input, historical_close)
+                create_historical_plot(config, ticker_data, original_close, median, lower_bound, upper_bound, ticker_input, historical_close)
             finally:
                 if os.path.exists(temp_raw_data_path):
                     os.remove(temp_raw_data_path)
                     logger.info(f"Tymczasowy plik {temp_raw_data_path} usunięty.")
+
+    elif page == "Benchmark":
+        st.write("Spółki użyte w benchmarku:", " ".join(benchmark_tickers))
+
+        if st.button("Generuj benchmark"):
+            with st.spinner('Trwa generowanie benchmarku...'):
+                try:
+                    max_prediction_length = config['model']['max_prediction_length']
+                    trim_date = pd.Timestamp(datetime.now(), tz='UTC') - pd.Timedelta(days=max_prediction_length)
+                    start_date = trim_date - pd.Timedelta(days=365)
+                    
+                    fetcher = DataFetcher(ConfigManager())
+                    historical_close_dict = {}
+                    for ticker in benchmark_tickers:
+                        full_data = fetcher.fetch_stock_data(ticker, start_date, datetime.now())
+                        if full_data.empty:
+                            logger.error(f"Brak danych dla {ticker}")
+                            continue
+                        full_data = full_data[full_data['Ticker'] == ticker].copy()
+                        full_data['Date'] = pd.to_datetime(full_data['Date'], utc=True)
+                        full_data.set_index('Date', inplace=True)
+                        historical_close_dict[ticker] = full_data['Close']
+                    
+                    accuracy_scores = create_benchmark_plot(config, benchmark_tickers, historical_close_dict)
+                    benchmark_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    save_benchmark_to_csv(benchmark_date, accuracy_scores)
+                except Exception as e:
+                    logger.error(f"Błąd podczas generowania benchmarku: {e}")
+                    st.error("Wystąpił błąd podczas generowania benchmarku.")
+                finally:
+                    if os.path.exists(temp_raw_data_path):
+                        os.remove(temp_raw_data_path)
+                        logger.info(f"Tymczasowy plik {temp_raw_data_path} usunięty.")
+
+        # Wyświetlanie historii benchmarków
+        st.subheader("Historia benchmarków")
+        benchmark_history = load_benchmark_history(benchmark_tickers)
+        st.dataframe(benchmark_history)
 
 if __name__ == "__main__":
     main()
