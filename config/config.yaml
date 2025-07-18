@@ -4,33 +4,32 @@ data:
   raw_data_path: data/stock_data.csv
   processed_data_path: data/processed_dataset.pt
   normalizers_path: data/normalizers.pkl
-  # Tickery
   tickers_file: config/training_tickers.yaml
 
 # Model settings
 model:
   max_prediction_length: 90
-  min_encoder_length: 50
-  max_encoder_length: 365
-  hidden_size: 256
-  attention_head_size: 8
-  dropout: 0.4
+  min_encoder_length: 50         # mniejsze okno wejściowe
+  max_encoder_length: 180        # mniejsze historyczne dane
+  hidden_size: 128               # z 256 → 128
+  attention_head_size: 4         # z 8 → 4
+  dropout: 0.3                   # mniejszy dropout dla stabilności
   learning_rate: 0.001
-  lstm_layers: 4
+  lstm_layers: 2                 # z 4 → 2 (oszczędność pamięci)
   loss: QuantileLoss
   use_quantile_loss: true
   quantiles: [0.1, 0.5, 0.9]
   min_hidden_size: 64
-  max_hidden_size: 256
-  min_lstm_layers: 3
-  max_lstm_layers: 4
-  min_attention_head_size: 6
-  max_attention_head_size: 12
+  max_hidden_size: 128           # ograniczenie optymalizacji
+  min_lstm_layers: 1
+  max_lstm_layers: 2
+  min_attention_head_size: 2
+  max_attention_head_size: 4
 
 # Training settings
 training:
   max_epochs: 100
-  batch_size: 18
+  batch_size: 64                # większy batch size, bo model lżejszy
   early_stopping_patience: 10
   optuna_trials: 5  # Number of trials for hyperparameter optimization
   reduce_lr_patience: 3
