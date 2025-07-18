@@ -11,24 +11,22 @@ from scripts.model import build_model
 from scripts.preprocessor import DataPreprocessor
 from scripts.config_manager import ConfigManager
 
-# Konfiguracja logowania
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 def load_data_and_model(config, ticker, temp_raw_data_path, historical_mode=False, trim_days=0):
-    """Wczytuje dane i model na podstawie tickera oraz porównuje parametry normalizerów."""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logger.info(f"Używane urządzenie: {device}")
 
     fetcher = DataFetcher(ConfigManager())
-    start_date = pd.Timestamp(datetime.now(), tz='UTC') - pd.Timedelta(days=365 + trim_days)
+    start_date = pd.Timestamp(datetime.now(), tz='UTC') - pd.Timedelta(days=730 + trim_days)
     new_data = fetcher.fetch_stock_data(ticker, start_date, datetime.now())
     if new_data.empty:
         logger.error(f"Nie udało się pobrać danych dla {ticker}")
         raise ValueError("Brak danych")
 
     new_data.to_csv(temp_raw_data_path, index=False)
-    logger.info(f"Dane dla {ticker} zapisane do {temp_raw_data_path}")
+    logger.info(f"Dane dla {ticker} zapisane do {temp_raw_data_path}, długość: {len(new_data)}")
 
     try:
         dataset = torch.load(config['data']['processed_data_path'], weights_only=False, map_location=device)
@@ -45,18 +43,14 @@ def load_data_and_model(config, ticker, temp_raw_data_path, historical_mode=Fals
         logger.error(f"Błąd wczytywania normalizerów: {e}")
         raise
 
-    # Porównanie parametrów normalizerów - ZAKTUALIZOWANE dla Relative_Returns
-    try:
-        relative_returns_normalizer_params = normalizers['Relative_Returns'].get_parameters() if 'Relative_Returns' in normalizers else {}
-        target_normalizer_params = dataset.target_normalizer.get_parameters()
-        logger.info(f"Parametry normalizera dla Relative_Returns (normalizers.pkl): {relative_returns_normalizer_params}")
-        logger.info(f"Parametry normalizera dla target (dataset.target_normalizer): {target_normalizer_params}")
-        if not torch.allclose(relative_returns_normalizer_params, target_normalizer_params, rtol=1e-5, atol=1e-8):
-            logger.warning("Normalizery dla Relative_Returns różnią się! Może to powodować błędy w predykcjach.")
-        else:
-            logger.info("Normalizery dla Relative_Returns są zgodne.")
-    except Exception as e:
-        logger.error(f"Błąd podczas porównywania normalizerów: {e}")
+    relative_returns_normalizer_params = normalizers['Relative_Returns'].get_parameters() if 'Relative_Returns' in normalizers else {}
+    target_normalizer_params = dataset.target_normalizer.get_parameters()
+    logger.info(f"Parametry normalizera dla Relative_Returns (normalizers.pkl): {relative_returns_normalizer_params}")
+    logger.info(f"Parametry normalizera dla target (dataset.target_normalizer): {target_normalizer_params}")
+    if not torch.allclose(relative_returns_normalizer_params, target_normalizer_params, rtol=1e-5, atol=1e-8):
+        logger.warning("Normalizery dla Relative_Returns różnią się! Może to powodować błędy w predykcjach.")
+    else:
+        logger.info("Normalizery dla Relative_Returns są zgodne.")
 
     try:
         checkpoint = torch.load(config['paths']['checkpoint_path'], map_location=device, weights_only=False)
@@ -75,8 +69,8 @@ def load_data_and_model(config, ticker, temp_raw_data_path, historical_mode=Fals
     return new_data, dataset, normalizers, model
 
 def preprocess_data(config, ticker_data, ticker, normalizers, historical_mode=False, trim_days=0):
-    """Preprocessuje dane dla wybranego tickera z logowaniem wartości przed i po normalizacji."""
     ticker_data = ticker_data[ticker_data['Ticker'] == ticker].copy().reset_index(drop=True)
+    logger.info(f"Długość ticker_data po filtrowaniu tickera: {len(ticker_data)}")
     ticker_data['Date'] = pd.to_datetime(ticker_data['Date'], utc=True)
     
     original_close = ticker_data['Close'].copy()
@@ -86,24 +80,29 @@ def preprocess_data(config, ticker_data, ticker, normalizers, historical_mode=Fa
     
     preprocessor = DataPreprocessor(config)
     ticker_data = preprocessor.feature_engineer.add_features(ticker_data)
+    logger.info(f"Długość ticker_data po dodaniu cech: {len(ticker_data)}")
     ticker_data = ticker_data.dropna(subset=['Close', 'Open', 'High', 'Low', 'Volume'])
+    logger.info(f"Długość ticker_data po dropna: {len(ticker_data)}")
     ticker_data = ticker_data[(ticker_data['Close'] > 0) & (ticker_data['High'] >= ticker_data['Low'])]
+    logger.info(f"Długość ticker_data po warunku: {len(ticker_data)}")
     ticker_data['time_idx'] = range(len(ticker_data))
     ticker_data['group_id'] = ticker
 
-    # Transformacja logarytmiczna
-    log_features = ["Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "ATR"]
+    log_features = [
+        "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "ATR", "BB_width",
+        "PE_ratio", "PB_ratio", "EPS"
+    ]
     for feature in log_features:
         if feature in ticker_data.columns:
             ticker_data[feature] = np.log1p(ticker_data[feature].clip(lower=0))
 
-    # Normalizacja
     numeric_features = [
         "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI", "Volatility",
         "MACD", "MACD_Signal", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
         "Close_momentum_1d", "Close_momentum_5d", "Close_vs_MA10", "Close_vs_MA50",
         "Close_percentile_20d", "Close_volatility_5d", "Close_RSI_divergence",
-        "Relative_Returns", "Log_Returns", "Future_Volume", "Future_Volatility"
+        "Relative_Returns", "Log_Returns", "Future_Volume", "Future_Volatility",
+        "BB_width", "Close_to_BB_upper", "Close_to_BB_lower", "PE_ratio", "PB_ratio", "EPS"
     ]
     for feature in numeric_features:
         if feature in ticker_data.columns and feature in normalizers:
@@ -118,7 +117,6 @@ def preprocess_data(config, ticker_data, ticker, normalizers, historical_mode=Fa
     return ticker_data, original_close
 
 def generate_predictions(config, dataset, model, ticker_data):
-    """Generuje predykcje dla podanych danych z użyciem CUDA i AMP."""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logger.info(f"Generowanie predykcji na urządzeniu: {device}")
     model = model.to(device)
@@ -130,7 +128,7 @@ def generate_predictions(config, dataset, model, ticker_data):
         max_prediction_length=config['model']['max_prediction_length']
     ).to_dataloader(train=False, batch_size=128, num_workers=4)
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # Użycie float16 w autocast
     with torch.no_grad(), torch.amp.autocast(device_type='cuda' if torch.cuda.is_available() else 'cpu', dtype=torch.float32):
         predictions = model.predict(ticker_dataset, mode="quantiles", return_x=True)
     logger.info(f"Kształt predictions.output: {predictions.output.shape}")
@@ -139,11 +137,9 @@ def generate_predictions(config, dataset, model, ticker_data):
     target_normalizer = dataset.target_normalizer
     logger.info(f"Predykcje Relative Returns przed denormalizacją (pierwsze 5 dla mediany): {pred_array[0, :5, 1].tolist()}")
     
-    # Denormalizacja Relative Returns
     pred_array = target_normalizer.inverse_transform(pred_array)
     logger.info(f"Predykcje Relative Returns po denormalizacji (pierwsze 5 dla mediany): {pred_array[0, :5, 1].tolist()}")
     
-    # Konwersja Relative Returns na ceny Close
     last_close_price = ticker_data['Close'].iloc[-1]
     logger.info(f"Ostatnia cena Close (znormalizowana): {last_close_price}")
     
@@ -160,7 +156,7 @@ def generate_predictions(config, dataset, model, ticker_data):
     
     if len(pred_array.shape) == 3:
         relative_returns_median = pred_array[0, :, 1]
-        relative_returns_lower = pred_array[0, :, 0]  
+        relative_returns_lower = pred_array[0, :, 0]
         relative_returns_upper = pred_array[0, :, 2]
         
         current_price = last_close_denorm

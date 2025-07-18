@@ -235,7 +235,7 @@ def create_benchmark_plot(config, benchmark_tickers, historical_close_dict):
     accuracy_scores = {}
     max_prediction_length = config['model']['max_prediction_length']
     trim_date = pd.Timestamp(datetime.now(), tz='UTC') - pd.Timedelta(days=max_prediction_length)
-    start_date = trim_date - pd.Timedelta(days=365)
+    start_date = trim_date - pd.Timedelta(days=720)
 
     for ticker in benchmark_tickers:
         try:
@@ -530,7 +530,7 @@ def main():
             try:
                 max_prediction_length = config['model']['max_prediction_length']
                 trim_date = pd.Timestamp(datetime.now(), tz='UTC') - pd.Timedelta(days=max_prediction_length)
-                start_date = trim_date - pd.Timedelta(days=365)
+                start_date = trim_date - pd.Timedelta(days=720)
                 
                 fetcher = DataFetcher(ConfigManager())
                 full_data = fetcher.fetch_stock_data(ticker_input, start_date, datetime.now())
@@ -568,7 +568,7 @@ def main():
                 try:
                     max_prediction_length = config['model']['max_prediction_length']
                     trim_date = pd.Timestamp(datetime.now(), tz='UTC') - pd.Timedelta(days=max_prediction_length)
-                    start_date = trim_date - pd.Timedelta(days=365)
+                    start_date = trim_date - pd.Timedelta(days=720)
                     
                     fetcher = DataFetcher(ConfigManager())
                     historical_close_dict = {}

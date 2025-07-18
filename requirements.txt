@@ -1,12 +1,26 @@
+# Używaj PyTorcha z niestandardowego indeksu (CUDA 12.8)
 --extra-index-url https://download.pytorch.org/whl/cu128
-pandas 
-numpy 
-yfinance 
-pytorch-forecasting 
-pytorch-lightning 
-torch 
+
+# Bazowe biblioteki danych
+pandas>=2.0
+pandas-datareader
+numpy>=1.24
+
+# Pobieranie danych finansowych
+yfinance
+
+# PyTorch i zależne biblioteki prognozowania
+torch>=2.3.0
+pytorch-lightning>=2.2.0
+pytorch-forecasting>=1.0.0
+
+# Aplikacja webowa do prezentacji wyników
 streamlit
+
+# Inne przydatne biblioteki
 PyYAML
 optuna
 plotly
 seaborn
+fredapi
+dotenv

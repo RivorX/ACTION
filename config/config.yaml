@@ -14,7 +14,7 @@ model:
   max_encoder_length: 365
   hidden_size: 256
   attention_head_size: 8
-  dropout: 0.2
+  dropout: 0.4
   learning_rate: 0.001
   lstm_layers: 4
   loss: QuantileLoss
@@ -30,7 +30,7 @@ model:
 # Training settings
 training:
   max_epochs: 100
-  batch_size: 32
+  batch_size: 18
   early_stopping_patience: 10
   optuna_trials: 5  # Number of trials for hyperparameter optimization
   reduce_lr_patience: 3

@@ -68,6 +68,18 @@ class FeatureEngineer:
             group['MA10'] = group['Close'].rolling(window=10).mean()
             group['MA50'] = group['Close'].rolling(window=50).mean()
             
+            # Bollinger Bands
+            group['BB_upper'] = group['Close'].rolling(window=20).mean() + 2 * group['Close'].rolling(window=20).std()
+            group['BB_lower'] = group['Close'].rolling(window=20).mean() - 2 * group['Close'].rolling(window=20).std()
+            group['BB_width'] = group['BB_upper'] - group['BB_lower']
+            group['Close_to_BB_upper'] = group['Close'] / group['BB_upper']
+            group['Close_to_BB_lower'] = group['Close'] / group['BB_lower']
+            
+            # Dane fundamentalne
+            group['PE_ratio'] = group['PE_ratio'].ffill().bfill()
+            group['PB_ratio'] = group['PB_ratio'].ffill().bfill()
+            group['EPS'] = group['EPS'].ffill().bfill()
+            
             # Wskaźniki techniczne
             group['RSI'] = self.compute_rsi(group['Close'])
             group['Volatility'] = group['Close'].rolling(window=20).std()
@@ -79,37 +91,21 @@ class FeatureEngineer:
             group['OBV'] = self.calculate_obv(group)
             
             # NOWE CECHY OPARTE NA CLOSE - Feature Engineering Close
-            # Momentum Close
             group['Close_momentum_1d'] = group['Close'] - group['Close'].shift(1)
             group['Close_momentum_5d'] = group['Close'] - group['Close'].shift(5)
-            
-            # Close względem średnich kroczących
             group['Close_vs_MA10'] = group['Close'] / group['MA10']
             group['Close_vs_MA50'] = group['Close'] / group['MA50']
-            
-            # Pozycja Close w oknie 20-dniowym (percentyl)
             group['Close_percentile_20d'] = group['Close'].rolling(window=20).rank(pct=True)
-            
-            # Zmienność Close w 5 dniach
             group['Close_volatility_5d'] = group['Close'].rolling(window=5).std()
-            
-            # Dywergencja między trendem Close a RSI
             close_trend = group['Close'].rolling(window=5).apply(lambda x: np.polyfit(range(len(x)), x, 1)[0])
             rsi_trend = group['RSI'].rolling(window=5).apply(lambda x: np.polyfit(range(len(x)), x, 1)[0])
             group['Close_RSI_divergence'] = close_trend - rsi_trend
-            
-            # CELE PREDYKCJI - Relative Returns
-            group['Relative_Returns'] = group['Close'].pct_change().shift(-1)  # (Close_t+1 - Close_t) / Close_t
-            group['Log_Returns'] = np.log(group['Close'] / group['Close'].shift(1)).shift(-1)  # log(Close_t+1 / Close_t)
-            
-            # Dodatkowe cele dla multi-target prediction
+            group['Relative_Returns'] = group['Close'].pct_change().shift(-1)
+            group['Log_Returns'] = np.log(group['Close'] / group['Close'].shift(1)).shift(-1)
             group['Future_Volume'] = group['Volume'].shift(-1)
             group['Future_Volatility'] = group['Volatility'].shift(-1)
-            
-            # Podstawowe cechy czasowe
             group['Day_of_Week'] = group['Date'].dt.dayofweek.astype(str)
             group['Month'] = group['Date'].dt.month.astype(str)
-            
             return group
 
         df = df.groupby('Ticker').apply(apply_features).reset_index(drop=True)
@@ -129,7 +125,6 @@ class DataPreprocessor:
         if df.empty:
             raise ValueError("Ramka danych jest pusta. Sprawdź dane wejściowe.")
 
-        # Czyszczenie i inżynieria cech
         df = self.feature_engineer.add_features(df)
         df = df.dropna(subset=['Close', 'Open', 'High', 'Low', 'Volume'])
         df = df[(df['Close'] > 0) & (df['High'] >= df['Low'])]
@@ -139,21 +134,22 @@ class DataPreprocessor:
         df['time_idx'] = (df['Date'] - df['Date'].min()).dt.days.astype(int)
         df['group_id'] = df['Ticker']
 
-        # Transformacja logarytmiczna - USUNIĘTO BB cechy
-        log_features = ["Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "ATR"]
+        # Rozszerzona lista cech logarytmowanych
+        log_features = [
+            "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "ATR", "BB_width",
+            "PE_ratio", "PB_ratio", "EPS"
+        ]
         for feature in log_features:
             if feature in df.columns:
                 df[feature] = np.log1p(df[feature].clip(lower=0))
 
-        # Normalizacja - ZAKTUALIZOWANA LISTA CECH
         numeric_features = [
             "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI", "Volatility",
             "MACD", "MACD_Signal", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
-            # Nowe cechy oparte na Close
             "Close_momentum_1d", "Close_momentum_5d", "Close_vs_MA10", "Close_vs_MA50",
             "Close_percentile_20d", "Close_volatility_5d", "Close_RSI_divergence",
-            # Cele predykcji
-            "Relative_Returns", "Log_Returns", "Future_Volume", "Future_Volatility"
+            "Relative_Returns", "Log_Returns", "Future_Volume", "Future_Volatility",
+            "BB_width", "Close_to_BB_upper", "Close_to_BB_lower", "PE_ratio", "PB_ratio", "EPS"
         ]
         
         normalizers = {}
@@ -162,28 +158,24 @@ class DataPreprocessor:
                 normalizers[feature] = TorchNormalizer()
                 df[feature] = normalizers[feature].fit_transform(df[feature].values)
 
-        # Zapisz normalizery
         with open(self.normalizers_path, 'wb') as f:
             pickle.dump(normalizers, f)
         logger.info(f"Normalizery zapisane do: {self.normalizers_path}")
 
-        # MULTI-TARGET PREDICTION - przewiduj jednocześnie 3 cele
         targets = ["Relative_Returns", "Future_Volume", "Future_Volatility"]
         
-        # Utwórz dataset z nowym celem predykcji (Relative Returns)
         dataset = TimeSeriesDataSet(
             df,
             time_idx="time_idx",
-            target="Relative_Returns",  # ZMIENIONY CEL na relative returns
+            target="Relative_Returns",
             group_ids=["group_id"],
             min_encoder_length=self.config['model']['min_encoder_length'],
             max_encoder_length=self.config['model']['max_encoder_length'],
             max_prediction_length=self.config['model']['max_prediction_length'],
-            # Cechy czasowe znane - USUNIĘTO BB cechy, dodano nowe cechy Close
             time_varying_known_reals=[f for f in numeric_features 
                                     if f in df.columns and f not in targets],
             time_varying_known_categoricals=["Day_of_Week", "Month"],
-            time_varying_unknown_reals=["Relative_Returns"],  # Cel predykcji
+            time_varying_unknown_reals=["Relative_Returns"],
             target_normalizer=normalizers.get("Relative_Returns", TorchNormalizer()),
             allow_missing_timesteps=True,
             add_encoder_length=False

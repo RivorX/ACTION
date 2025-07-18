@@ -1,25 +1,24 @@
-import torch
-import pytorch_forecasting
-from pytorch_forecasting.data import TimeSeriesDataSet
-from .model import build_model, CustomTemporalFusionTransformer
-from .preprocessor import DataPreprocessor
-from .config_manager import ConfigManager
-from pytorch_lightning import Trainer
-from pytorch_lightning.callbacks import EarlyStopping, Callback
+import pytorch_lightning as pl
+from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from pytorch_lightning.loggers import CSVLogger
+import torch
+from pytorch_forecasting import TimeSeriesDataSet
+from scripts.data_fetcher import DataFetcher
+from scripts.preprocessor import DataPreprocessor
+from scripts.model import build_model, CustomTemporalFusionTransformer
+from scripts.config_manager import ConfigManager
 import optuna
 import pandas as pd
 import numpy as np
 import pickle
 import logging
-import os
 from pathlib import Path
 
 # Konfiguracja logowania
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-class CustomModelCheckpoint(Callback):
+class CustomModelCheckpoint(pl.callbacks.Callback):
     """Niestandardowy callback do zapisywania checkpointów."""
     
     def __init__(self, monitor: str, save_path: str, mode: str = "min"):
@@ -41,15 +40,15 @@ class CustomModelCheckpoint(Callback):
                 "state_dict": pl_module.state_dict(),
                 "hyperparams": dict(pl_module.hparams)
             }
-            torch.save(checkpoint, self.save_path)  # weights_only=False
+            torch.save(checkpoint, self.save_path)
 
 def objective(trial, train_dataset: TimeSeriesDataSet, val_dataset: TimeSeriesDataSet, config: dict):
     model = build_model(train_dataset, config, trial)
-    trainer = Trainer(
+    trainer = pl.Trainer(
         max_epochs=config['training']['max_epochs'],
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
         devices=1,
-        precision="bf16-mixed" if torch.cuda.is_available() else "32-true",
+        precision="16-mixed" if torch.cuda.is_available() else "32-true",  # Zaktualizowano na float16
         callbacks=[
             EarlyStopping(monitor="val_loss", patience=config['training']['early_stopping_patience']),
             CustomModelCheckpoint(monitor="val_loss", save_path=config['paths']['checkpoint_path'], mode="min")
@@ -95,21 +94,20 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
         normalizers = pickle.load(f)
     logger.info(f"Wczytano normalizery z: {config['data']['normalizers_path']}")
     
-    # Transformacja logarytmiczna - USUNIĘTO BB cechy
-    log_features = ["Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "ATR"]
+    # Transformacja logarytmiczna
+    log_features = ["Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "ATR", "PE_ratio", "PB_ratio", "EPS"]
     for feature in log_features:
         if feature in df.columns:
             df[feature] = np.log1p(df[feature].clip(lower=0))
     
-    # Normalizacja - ZAKTUALIZOWANA LISTA CECH
+    # Normalizacja
     numeric_features = [
         "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI", "Volatility",
         "MACD", "MACD_Signal", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
-        # Nowe cechy oparte na Close
         "Close_momentum_1d", "Close_momentum_5d", "Close_vs_MA10", "Close_vs_MA50",
         "Close_percentile_20d", "Close_volatility_5d", "Close_RSI_divergence",
-        # Cele predykcji
-        "Relative_Returns", "Log_Returns", "Future_Volume", "Future_Volatility"
+        "Relative_Returns", "Log_Returns", "Future_Volume", "Future_Volatility",
+        "PE_ratio", "PB_ratio", "EPS"
     ]
     for feature in numeric_features:
         if feature in df.columns and feature in normalizers:
@@ -172,7 +170,7 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
         final_model = build_model(dataset, config, hyperparams=hyperparams)
         try:
             final_model.load_state_dict(checkpoint["state_dict"])
-            final_model.to(device)  # Przeniesienie modelu na GPU
+            final_model.to(device)
             logger.info(f"Model wczytany i przeniesiony na urządzenie: {device}")
             logger.info(f"Model parameters device: {next(final_model.parameters()).device}")
         except RuntimeError as e:
@@ -182,11 +180,11 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
         logger.info("Brak checkpointu lub kontynuacja wyłączona, trenowanie od zera")
         final_model = build_model(dataset, config, hyperparams=best_params)
 
-    trainer = Trainer(
+    trainer = pl.Trainer(
         max_epochs=config['training']['max_epochs'],
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
         devices=1,
-        precision="bf16-mixed" if torch.cuda.is_available() else "32-true",
+        precision="16-mixed" if torch.cuda.is_available() else "32-true",  # Zaktualizowano na float16
         callbacks=[
             EarlyStopping(monitor="val_loss", patience=config['training']['early_stopping_patience']),
             CustomModelCheckpoint(monitor="val_loss", save_path=config['paths']['checkpoint_path'], mode="min")
@@ -209,7 +207,7 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
         "state_dict": final_model.state_dict(),
         "hyperparams": dict(final_model.hparams)
     }
-    torch.save(checkpoint, Path(config['paths']['model_save_path']))  # weights_only=False
+    torch.save(checkpoint, Path(config['paths']['model_save_path']))
     logger.info(f"Model zapisany w: {config['paths']['model_save_path']}")
     return final_model
 

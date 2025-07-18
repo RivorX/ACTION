@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 from .config_manager import ConfigManager
 import yaml
+import numpy as np
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -36,7 +37,12 @@ class DataFetcher:
                 return pd.DataFrame()
             df.reset_index(inplace=True)
             df['Ticker'] = ticker
-            return df[['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 'Ticker']]
+            # Pobieranie danych fundamentalnych
+            info = stock.info
+            df['PE_ratio'] = info.get('trailingPE', np.nan)
+            df['PB_ratio'] = info.get('priceToBook', np.nan)
+            df['EPS'] = info.get('trailingEps', np.nan)
+            return df[['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 'Ticker', 'PE_ratio', 'PB_ratio', 'EPS']]
         except Exception as e:
             logger.error(f"Błąd pobierania danych dla {ticker}: {e}")
             return pd.DataFrame()
@@ -48,7 +54,7 @@ class DataFetcher:
         all_data = []
         for ticker in tickers:
             data = self.fetch_stock_data(ticker, start_date, end_date)
-            if not data.empty and all(col in data.columns for col in ['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 'Ticker']):
+            if not data.empty and all(col in data.columns for col in ['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 'Ticker', 'PE_ratio', 'PB_ratio', 'EPS']):
                 all_data.append(data)
             else:
                 logger.warning(f"Pominięto ticker {ticker} z powodu niekompletnych danych.")
