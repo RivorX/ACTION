@@ -206,7 +206,7 @@ class CustomTemporalFusionTransformer(LightningModule):
             y_target = torch.nan_to_num(y_target, nan=0.0, posinf=0.0, neginf=0.0)
         
         try:
-            with torch.amp.autocast(device_type='cuda' if torch.cuda.is_available() else 'cpu', dtype=torch.float16):
+            with torch.amp.autocast(device_type='cuda' if torch.cuda.is_available() else 'cpu', dtype=torch.bfloat16):
                 y_hat = self(x)
                 
                 # Sprawdź czy predykcje są poprawne
