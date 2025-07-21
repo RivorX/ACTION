@@ -64,6 +64,8 @@ class FeatureEngineer:
         df['Date'] = pd.to_datetime(df['Date'], utc=True)
 
         def apply_features(group):
+            group = group.sort_values('Date')
+
             # Podstawowe średnie kroczące
             group['MA10'] = group['Close'].rolling(window=10).mean()
             group['MA50'] = group['Close'].rolling(window=50).mean()
@@ -74,12 +76,16 @@ class FeatureEngineer:
             group['BB_width'] = group['BB_upper'] - group['BB_lower']
             group['Close_to_BB_upper'] = group['Close'] / group['BB_upper']
             group['Close_to_BB_lower'] = group['Close'] / group['BB_lower']
-            
-            # Dane fundamentalne
-            group['PE_ratio'] = group['PE_ratio'].ffill().bfill()
-            group['PB_ratio'] = group['PB_ratio'].ffill().bfill()
-            group['EPS'] = group['EPS'].ffill().bfill()
-            
+
+            # Wypełnianie brakujących danych fundamentalnych
+            for col in ['PE_ratio', 'PB_ratio', 'EPS']:
+                if col in group.columns:
+                    group[col] = group[col].interpolate(method='linear').ffill().bfill()
+
+            # Sprawdzenie poprawności danych fundamentalnych
+            if group['EPS'].isna().all() or group['PE_ratio'].isna().all() or group['PB_ratio'].isna().all():
+                logger.warning(f"Brak danych fundamentalnych dla grupy {group['Ticker'].iloc[0]}, używane będą tylko dane techniczne")
+
             # Wskaźniki techniczne
             group['RSI'] = self.compute_rsi(group['Close'])
             group['Volatility'] = group['Close'].rolling(window=20).std()
@@ -89,8 +95,8 @@ class FeatureEngineer:
             group['TR'] = self.calculate_true_range(group)
             group['ATR'] = group['TR'].rolling(window=14).mean()
             group['OBV'] = self.calculate_obv(group)
-            
-            # NOWE CECHY OPARTE NA CLOSE - Feature Engineering Close
+
+            # Feature engineering na Close
             group['Close_momentum_1d'] = group['Close'] - group['Close'].shift(1)
             group['Close_momentum_5d'] = group['Close'] - group['Close'].shift(5)
             group['Close_vs_MA10'] = group['Close'] / group['MA10']
@@ -106,10 +112,47 @@ class FeatureEngineer:
             group['Future_Volatility'] = group['Volatility'].shift(-1)
             group['Day_of_Week'] = group['Date'].dt.dayofweek.astype(str)
             group['Month'] = group['Date'].dt.month.astype(str)
+
+            # Wypełnianie NaN dla kolumn z shift(-1)
+            for col in ['Relative_Returns', 'Log_Returns', 'Future_Volume', 'Future_Volatility']:
+                group[col] = group[col].fillna(0)
+
+            # Wypełnianie NaN dla cech technicznych
+            technical_features = [
+                'MA10', 'MA50', 'BB_upper', 'BB_lower', 'BB_width', 'Close_to_BB_upper', 'Close_to_BB_lower',
+                'RSI', 'Volatility', 'MACD', 'MACD_Signal', 'Stochastic_K', 'Stochastic_D', 'TR', 'ATR', 'OBV',
+                'Close_momentum_1d', 'Close_momentum_5d', 'Close_vs_MA10', 'Close_vs_MA50',
+                'Close_percentile_20d', 'Close_volatility_5d', 'Close_RSI_divergence'
+            ]
+            for col in technical_features:
+                if col in group.columns:
+                    if group[col].isna().all():
+                        logger.warning(f"Kolumna {col} zawiera tylko NaN dla {group['Ticker'].iloc[0]}, wypełniam zerami")
+                        group[col] = group[col].fillna(0)
+                    else:
+                        group[col] = group[col].ffill().bfill()
+                        if group[col].isna().any():
+                            logger.warning(f"Kolumna {col} nadal zawiera NaN po ffill/bfill, wypełniam średnią")
+                            group[col] = group[col].fillna(group[col].mean())
+
             return group
 
         df = df.groupby('Ticker').apply(apply_features).reset_index(drop=True)
-        return df.ffill().bfill().dropna()
+
+        # Usuwamy tylko wiersze z brakami w kluczowych danych technicznych
+        required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+        df = df.dropna(subset=required_cols)
+        logger.info(f"Długość danych po dropna kluczowych kolumn: {len(df)}")
+
+        # Logowanie brakujących danych w innych kolumnach
+        for col in df.columns:
+            if col not in required_cols and df[col].isna().any():
+                logger.warning(f"Kolumna {col} zawiera wartości NaN dla tickera {df['Ticker'].iloc[0] if 'Ticker' in df else 'nieznany'} (liczba NaN: {df[col].isna().sum()})")
+
+        # Dodatkowe logowanie pierwszych 5 wierszy dla debugowania
+        logger.info(f"Pierwsze 5 wierszy po dodaniu cech:\n{df.head().to_string()}")
+
+        return df
 
 class DataPreprocessor:
     """Klasa odpowiedzialna za preprocessing danych giełdowych i tworzenie zbioru danych TimeSeriesDataSet."""
@@ -143,6 +186,7 @@ class DataPreprocessor:
             if feature in df.columns:
                 df[feature] = np.log1p(df[feature].clip(lower=0))
 
+        # Lista cech numerycznych
         numeric_features = [
             "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI", "Volatility",
             "MACD", "MACD_Signal", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
@@ -151,9 +195,18 @@ class DataPreprocessor:
             "Relative_Returns", "Log_Returns", "Future_Volume", "Future_Volatility",
             "BB_width", "Close_to_BB_upper", "Close_to_BB_lower", "PE_ratio", "PB_ratio", "EPS"
         ]
-        
-        normalizers = {}
+
+        # Filtruj cechy numeryczne, usuwając te, które mają wyłącznie NaN lub nieskończone wartości
+        valid_numeric_features = []
         for feature in numeric_features:
+            if feature in df.columns:
+                if df[feature].isna().all() or np.isinf(df[feature]).any():
+                    logger.warning(f"Cecha {feature} zawiera wyłącznie NaN lub wartości nieskończone, pomijam w time_varying_known_reals")
+                else:
+                    valid_numeric_features.append(feature)
+
+        normalizers = {}
+        for feature in valid_numeric_features:
             if feature in df.columns:
                 normalizers[feature] = TorchNormalizer()
                 df[feature] = normalizers[feature].fit_transform(df[feature].values)
@@ -172,8 +225,7 @@ class DataPreprocessor:
             min_encoder_length=self.config['model']['min_encoder_length'],
             max_encoder_length=self.config['model']['max_encoder_length'],
             max_prediction_length=self.config['model']['max_prediction_length'],
-            time_varying_known_reals=[f for f in numeric_features 
-                                    if f in df.columns and f not in targets],
+            time_varying_known_reals=[f for f in valid_numeric_features if f not in targets],
             time_varying_known_categoricals=["Day_of_Week", "Month"],
             time_varying_unknown_reals=["Relative_Returns"],
             target_normalizer=normalizers.get("Relative_Returns", TorchNormalizer()),

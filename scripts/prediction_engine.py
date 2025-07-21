@@ -1,11 +1,12 @@
+import logging
+import numpy as np
+import pandas as pd
+from datetime import datetime
 import torch
 from pytorch_forecasting import TimeSeriesDataSet
-import logging
-from datetime import datetime
-from pathlib import Path
-import pandas as pd
-import numpy as np
+from pytorch_forecasting.metrics import QuantileLoss
 import pickle
+from pathlib import Path
 from scripts.data_fetcher import DataFetcher
 from scripts.model import build_model
 from scripts.preprocessor import DataPreprocessor
@@ -73,7 +74,9 @@ def preprocess_data(config, ticker_data, ticker, normalizers, historical_mode=Fa
     logger.info(f"Długość ticker_data po filtrowaniu tickera: {len(ticker_data)}")
     ticker_data['Date'] = pd.to_datetime(ticker_data['Date'], utc=True)
     
+    # Zapisz original_close przed preprocessingiem
     original_close = ticker_data['Close'].copy()
+    
     if historical_mode and trim_days > 0:
         ticker_data = ticker_data.iloc[:-trim_days].copy()
         original_close = original_close.iloc[:-trim_days].copy()
@@ -85,9 +88,20 @@ def preprocess_data(config, ticker_data, ticker, normalizers, historical_mode=Fa
     logger.info(f"Długość ticker_data po dropna: {len(ticker_data)}")
     ticker_data = ticker_data[(ticker_data['Close'] > 0) & (ticker_data['High'] >= ticker_data['Low'])]
     logger.info(f"Długość ticker_data po warunku: {len(ticker_data)}")
+    
+    # Przytnij original_close do tej samej długości co ticker_data po dropna
+    original_close = original_close.loc[ticker_data.index].copy()
+    logger.info(f"Długość original_close po przycięciu: {len(original_close)}")
+    
     ticker_data['time_idx'] = range(len(ticker_data))
     ticker_data['group_id'] = ticker
-
+    
+    # Wypełnianie brakujących danych fundamentalnych zerami
+    for feature in ['PE_ratio', 'EPS']:
+        if feature in ticker_data.columns and ticker_data[feature].isna().all():
+            logger.warning(f"Wypełniam {feature} zerami dla {ticker}")
+            ticker_data[feature] = 0.0
+    
     log_features = [
         "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "ATR", "BB_width",
         "PE_ratio", "PB_ratio", "EPS"
