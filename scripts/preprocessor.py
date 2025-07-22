@@ -77,10 +77,15 @@ class FeatureEngineer:
             group['Close_to_BB_upper'] = group['Close'] / group['BB_upper']
             group['Close_to_BB_lower'] = group['Close'] / group['BB_lower']
 
-            # Wypełnianie brakujących danych fundamentalnych
+            # Dodanie zmiennych wskazujących brakujące dane fundamentalne
             for col in ['PE_ratio', 'PB_ratio', 'EPS']:
                 if col in group.columns:
-                    group[col] = group[col].interpolate(method='linear').ffill().bfill()
+                    group[f'{col}_missing'] = group[col].isna().astype(int)  # Dodajemy kolumnę wskazującą NaN
+                    if group[col].isna().all():
+                        logger.warning(f"Wypełniam {col} zerami dla {group['Ticker'].iloc[0]}")
+                        group[col] = 0.0  # Wypełniamy zerami, jeśli wszystkie wartości są NaN
+                    else:
+                        group[col] = group[col].interpolate(method='linear').ffill().bfill()  # Interpolacja dla częściowych braków
 
             # Sprawdzenie poprawności danych fundamentalnych
             if group['EPS'].isna().all() or group['PE_ratio'].isna().all() or group['PB_ratio'].isna().all():
@@ -164,7 +169,6 @@ class DataPreprocessor:
         self.processed_data_path = Path(config['data']['processed_data_path'])
 
     def preprocess_data(self, df: pd.DataFrame) -> TimeSeriesDataSet:
-        """Preprocessuje dane i tworzy zbiór danych TimeSeriesDataSet."""
         if df.empty:
             raise ValueError("Ramka danych jest pusta. Sprawdź dane wejściowe.")
 
@@ -177,14 +181,34 @@ class DataPreprocessor:
         df['time_idx'] = (df['Date'] - df['Date'].min()).dt.days.astype(int)
         df['group_id'] = df['Ticker']
 
-        # Rozszerzona lista cech logarytmowanych
+        # Rozszerzona lista cech logarytmowanych - specjalna obsługa dla cech fundamentalnych
         log_features = [
-            "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "ATR", "BB_width",
-            "PE_ratio", "PB_ratio", "EPS"
+            "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "ATR", "BB_width"
         ]
+        fundamental_features = ["PE_ratio", "PB_ratio", "EPS"]
+        
+        # Standardowa transformacja log dla cech technicznych
         for feature in log_features:
             if feature in df.columns:
                 df[feature] = np.log1p(df[feature].clip(lower=0))
+        
+        # Specjalna obsługa dla cech fundamentalnych
+        for feature in fundamental_features:
+            if feature in df.columns:
+                # Sprawdź czy cecha ma jakiekolwiek niezerowe wartości
+                nonzero_count = (df[feature] != 0.0).sum()
+                total_count = len(df[feature])
+                
+                if nonzero_count == 0:
+                    logger.warning(f"Cecha {feature} zawiera wyłącznie zera, pomijam transformację log")
+                    # Pozostaw jako zera - nie rób transformacji log
+                else:
+                    logger.info(f"Cecha {feature}: {nonzero_count}/{total_count} ({100*nonzero_count/total_count:.1f}%) niezerowych wartości")
+                    # Zastosuj transformację log tylko do wartości niezerowych
+                    mask = df[feature] > 0
+                    if mask.any():
+                        df.loc[mask, feature] = np.log1p(df.loc[mask, feature])
+                    # Wartości zerowe pozostają zerami
 
         # Lista cech numerycznych
         numeric_features = [
@@ -196,20 +220,69 @@ class DataPreprocessor:
             "BB_width", "Close_to_BB_upper", "Close_to_BB_lower", "PE_ratio", "PB_ratio", "EPS"
         ]
 
-        # Filtruj cechy numeryczne, usuwając te, które mają wyłącznie NaN lub nieskończone wartości
+        # Filtruj cechy numeryczne, usuwając te, które mają problemy
         valid_numeric_features = []
         for feature in numeric_features:
             if feature in df.columns:
-                if df[feature].isna().all() or np.isinf(df[feature]).any():
-                    logger.warning(f"Cecha {feature} zawiera wyłącznie NaN lub wartości nieskończone, pomijam w time_varying_known_reals")
+                # Sprawdź podstawowe problemy
+                has_nan = df[feature].isna().any()
+                has_inf = np.isinf(df[feature]).any()
+                all_zeros = (df[feature] == 0.0).all()
+                unique_count = df[feature].nunique()
+                
+                if has_nan or has_inf:
+                    logger.warning(f"Cecha {feature} zawiera NaN ({has_nan}) lub inf ({has_inf}), pomijam w time_varying_known_reals")
+                elif all_zeros and feature in ['PE_ratio', 'PB_ratio', 'EPS']:
+                    logger.warning(f"Cecha {feature} zawiera wyłącznie zera, pomijam w time_varying_known_reals ale zachowuję zmienną missing")
+                elif unique_count <= 1:
+                    logger.warning(f"Cecha {feature} ma tylko {unique_count} unikalnych wartości, może powodować problemy z normalizacją")
+                    # Dla cech fundamentalnych z jedną wartością, lepiej je pominąć
+                    if feature in ['PE_ratio', 'PB_ratio', 'EPS']:
+                        logger.warning(f"Pomijam cechę fundamentalną {feature} z powodu braku różnorodności wartości")
+                        continue
+                    else:
+                        valid_numeric_features.append(feature)
                 else:
                     valid_numeric_features.append(feature)
 
         normalizers = {}
         for feature in valid_numeric_features:
             if feature in df.columns:
-                normalizers[feature] = TorchNormalizer()
-                df[feature] = normalizers[feature].fit_transform(df[feature].values)
+                try:
+                    normalizer = TorchNormalizer()
+                    
+                    # Pobierz wartości dla wszystkich cech
+                    values = df[feature].values
+                    
+                    # Specjalna obsługa dla cech fundamentalnych
+                    if feature in ['PE_ratio', 'PB_ratio', 'EPS']:
+                        # Sprawdź czy wartości są w rozsądnym zakresie
+                        if len(np.unique(values)) < 2:
+                            logger.warning(f"Cecha {feature} ma mniej niż 2 unikalne wartości, pomijam normalizację")
+                            continue
+                        
+                        # Sprawdź zakres wartości po transformacji log
+                        min_val, max_val = values.min(), values.max()
+                        if max_val - min_val < 1e-6:  # Bardzo mały zakres
+                            logger.warning(f"Cecha {feature} ma bardzo mały zakres wartości ({min_val:.6f} - {max_val:.6f}), może powodować problemy")
+                    
+                    df[feature] = normalizer.fit_transform(values)
+                    normalizers[feature] = normalizer
+                    
+                    # Sprawdź wynik normalizacji
+                    if df[feature].isna().any() or np.isinf(df[feature]).any():
+                        logger.error(f"Normalizacja cechy {feature} spowodowała NaN lub inf, usuwam tę cechę")
+                        del normalizers[feature]
+                        # Usuń tę cechę z valid_numeric_features
+                        if feature in valid_numeric_features:
+                            valid_numeric_features.remove(feature)
+                    else:
+                        logger.info(f"Normalizacja cechy {feature} zakończona pomyślnie: min={df[feature].min():.6f}, max={df[feature].max():.6f}")
+                        
+                except Exception as e:
+                    logger.error(f"Błąd podczas normalizacji cechy {feature}: {e}")
+                    if feature in valid_numeric_features:
+                        valid_numeric_features.remove(feature)
 
         with open(self.normalizers_path, 'wb') as f:
             pickle.dump(normalizers, f)
@@ -217,6 +290,26 @@ class DataPreprocessor:
 
         targets = ["Relative_Returns", "Future_Volume", "Future_Volatility"]
         
+        # Dodajemy zmienne wskazujące brakujące dane do cech kategorycznych
+        categorical_features = ["Day_of_Week", "Month", "PE_ratio_missing", "PB_ratio_missing", "EPS_missing"]
+        valid_categorical_features = [f for f in categorical_features if f in df.columns]
+        
+        # WAŻNE: Konwertuj missing features na typ string (wymagane przez PyTorch Forecasting)
+        for missing_col in ['PE_ratio_missing', 'PB_ratio_missing', 'EPS_missing']:
+            if missing_col in df.columns:
+                df[missing_col] = df[missing_col].astype(str)
+                logger.info(f"Skonwertowano {missing_col} na typ string: {df[missing_col].unique()}")
+
+        # Logowanie finalnej listy cech
+        logger.info(f"Finalna lista cech numerycznych ({len(valid_numeric_features)}): {valid_numeric_features}")
+        logger.info(f"Finalna lista cech kategorycznych ({len(valid_categorical_features)}): {valid_categorical_features}")
+        
+        # Sprawdź czy mamy cechy fundamentalne
+        fundamental_in_features = [f for f in ['PE_ratio', 'PB_ratio', 'EPS'] if f in valid_numeric_features]
+        missing_features = [f for f in ['PE_ratio_missing', 'PB_ratio_missing', 'EPS_missing'] if f in valid_categorical_features]
+        logger.info(f"Cechy fundamentalne w modelu: {fundamental_in_features}")
+        logger.info(f"Zmienne missing fundamentalne: {missing_features}")
+
         dataset = TimeSeriesDataSet(
             df,
             time_idx="time_idx",
@@ -226,7 +319,7 @@ class DataPreprocessor:
             max_encoder_length=self.config['model']['max_encoder_length'],
             max_prediction_length=self.config['model']['max_prediction_length'],
             time_varying_known_reals=[f for f in valid_numeric_features if f not in targets],
-            time_varying_known_categoricals=["Day_of_Week", "Month"],
+            time_varying_known_categoricals=valid_categorical_features,
             time_varying_unknown_reals=["Relative_Returns"],
             target_normalizer=normalizers.get("Relative_Returns", TorchNormalizer()),
             allow_missing_timesteps=True,

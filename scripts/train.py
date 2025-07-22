@@ -94,13 +94,34 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
         normalizers = pickle.load(f)
     logger.info(f"Wczytano normalizery z: {config['data']['normalizers_path']}")
     
-    # Transformacja logarytmiczna
-    log_features = ["Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "ATR", "PE_ratio", "PB_ratio", "EPS"]
+    # Transformacja logarytmiczna - specjalna obsługa dla cech fundamentalnych
+    log_features = ["Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "ATR"]
+    fundamental_features = ["PE_ratio", "PB_ratio", "EPS"]
+    
+    # Standardowa transformacja log dla cech technicznych
     for feature in log_features:
         if feature in df.columns:
             df[feature] = np.log1p(df[feature].clip(lower=0))
     
-    # Normalizacja
+    # Specjalna obsługa dla cech fundamentalnych
+    for feature in fundamental_features:
+        if feature in df.columns:
+            # Sprawdź czy cecha ma jakiekolwiek niezerowe wartości
+            nonzero_count = (df[feature] != 0.0).sum()
+            total_count = len(df[feature])
+            
+            if nonzero_count == 0:
+                logger.warning(f"Cecha {feature} zawiera wyłącznie zera, pomijam transformację log")
+                # Pozostaw jako zera - nie rób transformacji log
+            else:
+                logger.info(f"Cecha {feature}: {nonzero_count}/{total_count} ({100*nonzero_count/total_count:.1f}%) niezerowych wartości")
+                # Zastosuj transformację log tylko do wartości niezerowych
+                mask = df[feature] > 0
+                if mask.any():
+                    df.loc[mask, feature] = np.log1p(df.loc[mask, feature])
+                # Wartości zerowe pozostają zerami
+    
+    # Normalizacja z sprawdzeniem dostępności cech
     numeric_features = [
         "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI", "Volatility",
         "MACD", "MACD_Signal", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
@@ -109,13 +130,36 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
         "Relative_Returns", "Log_Returns", "Future_Volume", "Future_Volatility",
         "PE_ratio", "PB_ratio", "EPS"
     ]
+    
+    # Sprawdź które cechy fundamentalne są dostępne w normalizerach
+    available_fundamental = []
+    for feature in ["PE_ratio", "PB_ratio", "EPS"]:
+        if feature in normalizers and feature in df.columns:
+            available_fundamental.append(feature)
+        elif feature in df.columns:
+            logger.warning(f"Cecha {feature} jest w danych ale nie ma dla niej normalizera, pomijam")
+    
+    logger.info(f"Dostępne cechy fundamentalne: {available_fundamental}")
+    
     for feature in numeric_features:
         if feature in df.columns and feature in normalizers:
-            df[feature] = normalizers[feature].transform(df[feature].values)
+            try:
+                df[feature] = normalizers[feature].transform(df[feature].values)
+                # Sprawdź czy nie ma NaN po transformacji
+                if df[feature].isna().any() or np.isinf(df[feature]).any():
+                    logger.error(f"Transformacja cechy {feature} spowodowała NaN lub inf")
+            except Exception as e:
+                logger.error(f"Błąd transformacji cechy {feature}: {e}")
+        elif feature in df.columns:
+            logger.warning(f"Brak normalizera dla cechy {feature}")
     
     for col in numeric_features:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').astype(float)
+            # Sprawdź końcowy stan cechy
+            nan_count = df[col].isna().sum()
+            if nan_count > 0:
+                logger.warning(f"Cecha {col} ma {nan_count} wartości NaN po konwersji")
     
     categorical_columns = ['Day_of_Week', 'Month']
     for cat_col in categorical_columns:
@@ -138,6 +182,18 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
 
     logger.info(f"Statystyki time_idx: {df['time_idx'].describe()}")
     logger.info(f"max_time_idx: {df['time_idx'].max()}, split_idx: {int(df['time_idx'].max() * 0.8)}")
+
+    # Naprawienie typów dla flag missing w zbiorach danych
+    fundamental_missing_flags = ['PE_ratio_missing', 'PB_ratio_missing', 'EPS_missing']
+    for flag in fundamental_missing_flags:
+        if flag in train_df.columns:
+            train_df = train_df.copy()  # Zapewniamy, że mamy kopię do modyfikacji
+            train_df[flag] = train_df[flag].astype(str)
+            logger.info(f"Przekonwertowano {flag} na string w train_df: {train_df[flag].unique()}")
+        if flag in val_df.columns:
+            val_df = val_df.copy()  # Zapewniamy, że mamy kopię do modyfikacji
+            val_df[flag] = val_df[flag].astype(str)
+            logger.info(f"Przekonwertowano {flag} na string w val_df: {val_df[flag].unique()}")
 
     # Tworzenie datasetów treningowego i walidacyjnego
     train_dataset = TimeSeriesDataSet.from_parameters(dataset.get_parameters(), train_df)

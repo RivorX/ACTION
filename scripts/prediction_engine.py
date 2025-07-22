@@ -96,11 +96,24 @@ def preprocess_data(config, ticker_data, ticker, normalizers, historical_mode=Fa
     ticker_data['time_idx'] = range(len(ticker_data))
     ticker_data['group_id'] = ticker
     
-    # Wypełnianie brakujących danych fundamentalnych zerami
-    for feature in ['PE_ratio', 'EPS']:
-        if feature in ticker_data.columns and ticker_data[feature].isna().all():
-            logger.warning(f"Wypełniam {feature} zerami dla {ticker}")
-            ticker_data[feature] = 0.0
+    # Wypełnianie brakujących danych fundamentalnych zerami i tworzenie flag missing (jeśli nie istnieją)
+    fundamental_features = ['PE_ratio', 'PB_ratio', 'EPS']
+    for feature in fundamental_features:
+        if feature in ticker_data.columns:
+            # Tworzenie flagi missing tylko jeśli nie istnieje
+            missing_flag = f"{feature}_missing"
+            if missing_flag not in ticker_data.columns:
+                ticker_data[missing_flag] = (ticker_data[feature].isna() | (ticker_data[feature] == 0)).astype(int)
+                logger.info(f"Utworzono flagę {missing_flag}, wartości: {ticker_data[missing_flag].unique()}")
+            
+            # Wypełnienie brakujących wartości zerami
+            if ticker_data[feature].isna().any():
+                logger.warning(f"Wypełniam brakujące wartości {feature} zerami dla {ticker}")
+                ticker_data[feature] = ticker_data[feature].fillna(0.0)
+            
+            if ticker_data[feature].isna().all():
+                logger.warning(f"Wypełniam wszystkie wartości {feature} zerami dla {ticker}")
+                ticker_data[feature] = 0.0
     
     log_features = [
         "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "ATR", "BB_width",
@@ -127,6 +140,13 @@ def preprocess_data(config, ticker_data, ticker, normalizers, historical_mode=Fa
         if cat_col in ticker_data.columns:
             ticker_data[cat_col] = ticker_data[cat_col].astype(str)
 
+    # Konwersja flag missing na stringi (wymagane przez PyTorch Forecasting)
+    fundamental_missing_flags = ['PE_ratio_missing', 'PB_ratio_missing', 'EPS_missing']
+    for flag in fundamental_missing_flags:
+        if flag in ticker_data.columns:
+            ticker_data[flag] = ticker_data[flag].astype(str)
+            logger.info(f"Przekonwertowano {flag} na string: {ticker_data[flag].unique()}")
+
     logger.info(f"Kolumny ticker_data: {ticker_data.columns.tolist()}")
     return ticker_data, original_close
 
@@ -134,6 +154,13 @@ def generate_predictions(config, dataset, model, ticker_data):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logger.info(f"Generowanie predykcji na urządzeniu: {device}")
     model = model.to(device)
+    
+    # Upewnienie się, że flagi missing są stringami przed utworzeniem TimeSeriesDataSet
+    fundamental_missing_flags = ['PE_ratio_missing', 'PB_ratio_missing', 'EPS_missing']
+    for flag in fundamental_missing_flags:
+        if flag in ticker_data.columns:
+            ticker_data[flag] = ticker_data[flag].astype(str)
+            logger.info(f"Upewniono się że {flag} jest stringiem: {ticker_data[flag].dtype}")
     
     ticker_dataset = TimeSeriesDataSet.from_parameters(
         dataset.get_parameters(),
