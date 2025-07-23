@@ -23,7 +23,10 @@ def start_training(regions: str = 'global', years: int = 3, use_optuna: bool = F
         config_manager = ConfigManager()
         config = config_manager.config
         
-        # Aktualizuj liczbę lat w konfiguracji
+        # Walidacja liczby lat
+        if years < 3:
+            logger.warning(f"Podano {years} lat. Minimalna liczba lat to 3. Ustawiam domyślnie na 3 lata.")
+            years = 3
         config['data']['years'] = years
         logger.info(f"Ustawiono liczbę lat danych: {years}")
 
@@ -80,11 +83,12 @@ def start_training(regions: str = 'global', years: int = 3, use_optuna: bool = F
 if __name__ == "__main__":
     regions = input(f"Wybierz region(y) ({', '.join(['poland', 'europe', 'usa', 'global', 'all'])}, oddziel przecinkami, np. poland,europe) [domyślnie: global]: ").lower() or 'global'
     
-    years_input = input("Podaj liczbę lat danych historycznych [domyślnie: 3]: ").lower() or '3'
+    years_input = input("Podaj liczbę lat danych historycznych [minimum: 3, domyślnie: 3]: ").lower() or '3'
     try:
         years = int(years_input)
-        if years <= 0:
-            raise ValueError("Liczba lat musi być dodatnia.")
+        if years < 3:
+            logger.warning(f"Podano {years} lat. Minimalna liczba lat to 3. Używam domyślnej wartości 3 lata.")
+            years = 3
     except ValueError as e:
         logger.error(f"Błąd: {e}. Używam domyślnej wartości 3 lata.")
         years = 3
