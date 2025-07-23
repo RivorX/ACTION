@@ -167,6 +167,8 @@ class DataPreprocessor:
         self.feature_engineer = FeatureEngineer()
         self.normalizers_path = Path(config['data']['normalizers_path'])
         self.processed_data_path = Path(config['data']['processed_data_path'])
+        # Definicja wszystkich możliwych kategorii dla Day_of_Week
+        self.day_of_week_categories = [str(i) for i in range(7)]  # ['0', '1', '2', '3', '4', '5', '6']
 
     def preprocess_data(self, df: pd.DataFrame) -> TimeSeriesDataSet:
         if df.empty:
@@ -180,6 +182,10 @@ class DataPreprocessor:
         df['Date'] = pd.to_datetime(df['Date'], utc=True)
         df['time_idx'] = (df['Date'] - df['Date'].min()).dt.days.astype(int)
         df['group_id'] = df['Ticker']
+
+        # Zapewnienie, że Day_of_Week ma wszystkie kategorie (0-6) jako stringi
+        df['Day_of_Week'] = df['Date'].dt.dayofweek.astype(str)
+        df['Day_of_Week'] = pd.Categorical(df['Day_of_Week'], categories=self.day_of_week_categories, ordered=False)
 
         # Rozszerzona lista cech logarytmowanych - specjalna obsługa dla cech fundamentalnych
         log_features = [
@@ -299,6 +305,9 @@ class DataPreprocessor:
             if missing_col in df.columns:
                 df[missing_col] = df[missing_col].astype(str)
                 logger.info(f"Skonwertowano {missing_col} na typ string: {df[missing_col].unique()}")
+
+        # Logowanie kategorii dla Day_of_Week
+        logger.info(f"Kategorie dla Day_of_Week: {self.day_of_week_categories}")
 
         # Logowanie finalnej listy cech
         logger.info(f"Finalna lista cech numerycznych ({len(valid_numeric_features)}): {valid_numeric_features}")

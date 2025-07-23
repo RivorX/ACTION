@@ -249,8 +249,6 @@ class CustomTemporalFusionTransformer(LightningModule):
 
     def _log_validation_details(self, x, y_hat, y_target, batch_idx):
         """Wydzielona funkcja do logowania szczegółów walidacji."""
-        # Logowanie wartości przed denormalizacją
-        logger.info(f"Validation batch {batch_idx}: y_hat[0, :5] = {y_hat[0, :5].tolist()}, y_target[0, :5] = {y_target[0, :5].tolist()}")
 
         # Denormalizacja y_hat i y_target (Relative Returns)
         relative_returns_normalizer = self.normalizers.get('Relative_Returns') or self.dataset.target_normalizer
@@ -259,13 +257,6 @@ class CustomTemporalFusionTransformer(LightningModule):
                 # Przeniesienie na CPU i konwersja na float32 przed denormalizacją
                 y_hat_denorm = relative_returns_normalizer.inverse_transform(y_hat.float().cpu())
                 y_target_denorm = relative_returns_normalizer.inverse_transform(y_target.float().cpu())
-                
-                # Logowanie Relative Returns po denormalizacji
-                logger.info(
-                    f"Validation batch {batch_idx}: "
-                    f"y_hat_denorm (Relative Returns)[0, :5] = {y_hat_denorm[0, :5].tolist()}, "
-                    f"y_target_denorm (Relative Returns)[0, :5] = {y_target_denorm[0, :5].tolist()}"
-                )
                 
                 # KONWERSJA RELATIVE RETURNS NA RZECZYWISTE CENY
                 if 'encoder_cont' in x:

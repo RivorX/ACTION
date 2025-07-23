@@ -164,6 +164,10 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
     categorical_columns = ['Day_of_Week', 'Month']
     for cat_col in categorical_columns:
         if cat_col in df.columns:
+            if cat_col == 'Day_of_Week':
+                # Wymuś 7-dniowy tydzień, uzupełnij braki na poniedziałek (0)
+                df[cat_col] = pd.Categorical(df[cat_col], categories=[0,1,2,3,4,5,6])
+                df[cat_col] = df[cat_col].fillna(0)
             df[cat_col] = df[cat_col].astype(str)
 
     # Filtracja grup z wystarczającą liczbą rekordów
