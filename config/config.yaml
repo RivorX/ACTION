@@ -19,8 +19,9 @@ model:
   loss: QuantileLoss
   use_quantile_loss: true
   quantiles: [0.1, 0.5, 0.9]
+  # Hyperparameter ranges for Optuna
   min_hidden_size: 64
-  max_hidden_size: 128           # ograniczenie optymalizacji
+  max_hidden_size: 128
   min_lstm_layers: 1
   max_lstm_layers: 2
   min_attention_head_size: 2
@@ -29,11 +30,11 @@ model:
 # Training settings
 training:
   max_epochs: 100
-  batch_size: 64                # większy batch size, bo model lżejszy
+  batch_size: 64
   early_stopping_patience: 10
-  optuna_trials: 5  # Number of trials for hyperparameter optimization
+  optuna_trials: 5              # Number of trials for hyperparameter optimization
   reduce_lr_patience: 3
-  reduce_lr_factor: 0.3
+  reduce_lr_factor: 0.5
 
 # Paths
 paths:

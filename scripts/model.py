@@ -190,66 +190,71 @@ class CustomTemporalFusionTransformer(LightningModule):
                 raise e
 
     def _shared_step(self, batch: Tuple[Dict[str, torch.Tensor], List[torch.Tensor]], batch_idx: int, stage: str) -> torch.Tensor:
-        """Wspólna logika dla kroku treningowego i walidacyjnego."""
         x, y = batch
         x = move_to_device(x, self.device)
         y_target = move_to_device(y[0], self.device)
         
-        # Upewnij się, że y_target wymaga gradientów podczas treningu
         if stage == 'train' and not y_target.requires_grad:
             y_target.requires_grad_(True)
         
-        # Sprawdź czy dane wejściowe są poprawne
         if torch.isnan(y_target).any() or torch.isinf(y_target).any():
             logger.warning(f"NaN/Inf w y_target w batch {batch_idx}")
-            # Zamień NaN/Inf na zero lub pomiń ten batch
             y_target = torch.nan_to_num(y_target, nan=0.0, posinf=0.0, neginf=0.0)
         
         try:
             with torch.amp.autocast(device_type='cuda' if torch.cuda.is_available() else 'cpu', dtype=torch.bfloat16):
                 y_hat = self(x)
                 
-                # Sprawdź czy predykcje są poprawne
                 if torch.isnan(y_hat).any() or torch.isinf(y_hat).any():
                     logger.warning(f"NaN/Inf w y_hat w batch {batch_idx}")
                     y_hat = torch.nan_to_num(y_hat, nan=0.0, posinf=0.0, neginf=0.0)
                 
+                # Obliczanie straty
                 loss = self.model.loss(y_hat, y_target)
                 
-                # Sprawdź czy loss jest skończony
+                # Obliczanie dodatkowych metryk tylko dla walidacji
+                if stage == 'val':
+                    # Wybierz medianę dla metryk (indeks 1 dla kwantyli [0.1, 0.5, 0.9])
+                    y_hat_median = y_hat[:, :, 1] if y_hat.dim() == 3 else y_hat
+                    
+                    # MAPE
+                    mape = torch.mean(torch.abs((y_target - y_hat_median) / (y_target + 1e-10))) * 100
+                    self.log(f"{stage}_mape", mape, on_step=False, on_epoch=True, prog_bar=True, batch_size=x['encoder_cont'].size(0))
+                    
+                    # Directional Accuracy
+                    direction_pred = torch.sign(y_hat_median)
+                    direction_true = torch.sign(y_target)
+                    directional_accuracy = (direction_pred == direction_true).float().mean() * 100
+                    self.log(f"{stage}_directional_accuracy", directional_accuracy, on_step=False, on_epoch=True, prog_bar=True, batch_size=x['encoder_cont'].size(0))
+                
                 if not torch.isfinite(loss):
                     logger.warning(f"Loss nie jest skończony w batch {batch_idx}: {loss}")
-                    # Zwróć mały loss zamiast inf/nan
                     loss = torch.tensor(1e-6, device=self.device, requires_grad=True)
                 
         except Exception as e:
             logger.error(f"Błąd podczas forward pass w batch {batch_idx}: {e}")
-            # Zwróć fallback loss
             loss = torch.tensor(1e-6, device=self.device, requires_grad=True)
             y_hat = torch.zeros_like(y_target, requires_grad=True)
         
         batch_size = x['encoder_cont'].size(0)
         self.log(f"{stage}_loss", loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=batch_size)
-
-        # Obliczanie l2_norm dla parametrów modelu (tylko jeśli parametry mają gradienty)
+        
         try:
             l2_norm = sum(p.pow(2).sum() for p in self.parameters() if p.requires_grad).sqrt().item()
             self.log(f"{stage}_l2_norm", l2_norm, on_step=True, on_epoch=True, prog_bar=False, batch_size=batch_size)
         except Exception as e:
             logger.warning(f"Nie można obliczyć l2_norm: {e}")
-
-        # Logowanie tylko dla walidacji i tylko co 50 batchy
+        
         if stage == 'val' and batch_idx % 50 == 0:
             try:
                 self._log_validation_details(x, y_hat, y_target, batch_idx)
             except Exception as e:
                 logger.error(f"Błąd w logowaniu szczegółów walidacji: {e}")
-
+        
         return loss
 
     def _log_validation_details(self, x, y_hat, y_target, batch_idx):
         """Wydzielona funkcja do logowania szczegółów walidacji."""
-
         # Denormalizacja y_hat i y_target (Relative Returns)
         relative_returns_normalizer = self.normalizers.get('Relative_Returns') or self.dataset.target_normalizer
         if relative_returns_normalizer:
@@ -305,7 +310,6 @@ class CustomTemporalFusionTransformer(LightningModule):
             logger.warning("Brak normalizera dla 'Relative_Returns'")
 
     def _convert_to_prices(self, y_hat_denorm, y_target_denorm, last_close_price, batch_idx):
-        """Konwertuje Relative Returns na rzeczywiste ceny."""
         def to_scalar(tensor_val):
             if hasattr(tensor_val, 'numel') and tensor_val.numel() == 1:
                 return tensor_val.item()
@@ -322,9 +326,15 @@ class CustomTemporalFusionTransformer(LightningModule):
         
         for i in range(min(5, y_hat_denorm.shape[1])):
             # Dla predykcji (quantiles)
-            relative_return_pred = to_scalar(y_hat_denorm[0, i, 1])  # mediana
-            relative_return_pred_lower = to_scalar(y_hat_denorm[0, i, 0])  # dolny
-            relative_return_pred_upper = to_scalar(y_hat_denorm[0, i, 2])  # górny
+            if y_hat_denorm.dim() == 3:  # Sprawdź, czy tensor ma 3 wymiary
+                relative_return_pred = to_scalar(y_hat_denorm[0, i, 1])  # mediana
+                relative_return_pred_lower = to_scalar(y_hat_denorm[0, i, 0])  # dolny
+                relative_return_pred_upper = to_scalar(y_hat_denorm[0, i, 2])  # górny
+            else:
+                logger.warning(f"y_hat_denorm ma nieoczekiwany kształt: {y_hat_denorm.shape}")
+                relative_return_pred = to_scalar(y_hat_denorm[0, i])
+                relative_return_pred_lower = relative_return_pred
+                relative_return_pred_upper = relative_return_pred
             
             # Oblicz ceny
             next_price_pred = current_price_pred * (1 + relative_return_pred)
