@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 from pytorch_forecasting.data import TimeSeriesDataSet
 from pytorch_forecasting.data.encoders import TorchNormalizer
+import pytorch_forecasting
 import torch
 import pickle
 import logging
@@ -25,12 +26,13 @@ class FeatureEngineer:
 
     @staticmethod
     def calculate_macd(prices: pd.Series) -> tuple:
-        """Oblicza MACD i linię sygnałową."""
+        """Oblicza MACD, linię sygnałową i histogram MACD."""
         exp12 = prices.ewm(span=12, adjust=False).mean()
         exp26 = prices.ewm(span=26, adjust=False).mean()
         macd = exp12 - exp26
         signal = macd.ewm(span=9, adjust=False).mean()
-        return macd, signal
+        histogram = macd - signal
+        return macd, signal, histogram
 
     @staticmethod
     def calculate_stochastic_k(group: pd.DataFrame) -> pd.Series:
@@ -51,6 +53,57 @@ class FeatureEngineer:
     def calculate_obv(group: pd.DataFrame) -> pd.Series:
         """Oblicza On-Balance Volume."""
         return (np.sign(group['Close'].diff()) * group['Volume']).cumsum()
+
+    @staticmethod
+    def calculate_adx(group: pd.DataFrame, period: int = 14) -> pd.Series:
+        """Oblicza Average Directional Index (ADX)."""
+        tr = FeatureEngineer.calculate_true_range(group)
+        plus_dm = group['High'].diff().where(lambda x: x > 0, 0)
+        minus_dm = (-group['Low'].diff()).where(lambda x: x > 0, 0)
+        
+        plus_di = 100 * (plus_dm.ewm(span=period, adjust=False).mean() / tr.ewm(span=period, adjust=False).mean())
+        minus_di = 100 * (minus_dm.ewm(span=period, adjust=False).mean() / tr.ewm(span=period, adjust=False).mean())
+        
+        dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
+        adx = dx.ewm(span=period, adjust=False).mean()
+        return adx
+
+    @staticmethod
+    def calculate_cci(group: pd.DataFrame, period: int = 20) -> pd.Series:
+        """Oblicza Commodity Channel Index (CCI)."""
+        typical_price = (group['High'] + group['Low'] + group['Close']) / 3
+        sma_tp = typical_price.rolling(window=period).mean()
+        mean_dev = (typical_price - sma_tp).abs().rolling(window=period).mean()
+        cci = (typical_price - sma_tp) / (0.015 * mean_dev)
+        return cci
+
+    @staticmethod
+    def calculate_ichimoku(group: pd.DataFrame) -> tuple:
+        """Oblicza linie Ichimoku Cloud: Tenkan-sen, Kijun-sen, Senkou Span A, Senkou Span B."""
+        high_9 = group['High'].rolling(window=9).max()
+        low_9 = group['Low'].rolling(window=9).min()
+        tenkan_sen = (high_9 + low_9) / 2
+
+        high_26 = group['High'].rolling(window=26).max()
+        low_26 = group['Low'].rolling(window=26).min()
+        kijun_sen = (high_26 + low_26) / 2
+
+        senkou_span_a = (tenkan_sen + kijun_sen) / 2
+        senkou_span_b = (group['High'].rolling(window=52).max() + group['Low'].rolling(window=52).min()) / 2
+
+        return tenkan_sen, kijun_sen, senkou_span_a, senkou_span_b
+
+    @staticmethod
+    def calculate_roc(prices: pd.Series, period: int = 20) -> pd.Series:
+        """Oblicza Price Rate of Change (ROC)."""
+        return 100 * (prices - prices.shift(period)) / prices.shift(period)
+
+    @staticmethod
+    def calculate_vwap(group: pd.DataFrame) -> pd.Series:
+        """Oblicza Volume Weighted Average Price (VWAP)."""
+        typical_price = (group['High'] + group['Low'] + group['Close']) / 3
+        vwap = (typical_price * group['Volume']).cumsum() / group['Volume'].cumsum()
+        return vwap
 
     @staticmethod
     def remove_outliers(df: pd.DataFrame, column: str, threshold: float = 3) -> pd.DataFrame:
@@ -79,41 +132,40 @@ class FeatureEngineer:
 
             # Wskaźniki techniczne
             group['RSI'] = self.compute_rsi(group['Close'])
-            group['Volatility'] = group['Close'].rolling(window=20).std()
-            group['MACD'], group['MACD_Signal'] = self.calculate_macd(group['Close'])
+            group['MACD'], group['MACD_Signal'], group['MACD_Histogram'] = self.calculate_macd(group['Close'])
             group['Stochastic_K'] = self.calculate_stochastic_k(group)
             group['Stochastic_D'] = group['Stochastic_K'].rolling(window=3).mean()
             group['TR'] = self.calculate_true_range(group)
             group['ATR'] = group['TR'].rolling(window=14).mean()
             group['OBV'] = self.calculate_obv(group)
+            group['ADX'] = self.calculate_adx(group)
+            group['CCI'] = self.calculate_cci(group)
+            group['Tenkan_sen'], group['Kijun_sen'], group['Senkou_Span_A'], group['Senkou_Span_B'] = self.calculate_ichimoku(group)
+            group['ROC'] = self.calculate_roc(group['Close'])
+            group['VWAP'] = self.calculate_vwap(group)
+            group['Momentum_20d'] = group['Close'] - group['Close'].shift(20)
+            group['Close_to_MA_ratio'] = group['Close'] / ((group['MA10'] + group['MA50']) / 2)
 
-            # Feature engineering na Close
-            group['Close_momentum_1d'] = group['Close'] - group['Close'].shift(1)
-            group['Close_momentum_5d'] = group['Close'] - group['Close'].shift(5)
-            group['Close_vs_MA10'] = group['Close'] / group['MA10']
-            group['Close_vs_MA50'] = group['Close'] / group['MA50']
-            group['Close_percentile_20d'] = group['Close'].rolling(window=20).rank(pct=True)
-            group['Close_volatility_5d'] = group['Close'].rolling(window=5).std()
-            close_trend = group['Close'].rolling(window=5).apply(lambda x: np.polyfit(range(len(x)), x, 1)[0])
-            rsi_trend = group['RSI'].rolling(window=5).apply(lambda x: np.polyfit(range(len(x)), x, 1)[0])
-            group['Close_RSI_divergence'] = close_trend - rsi_trend
+            # Targety
             group['Relative_Returns'] = group['Close'].pct_change().shift(-1)
             group['Log_Returns'] = np.log(group['Close'] / group['Close'].shift(1)).shift(-1)
             group['Future_Volume'] = group['Volume'].shift(-1)
-            group['Future_Volatility'] = group['Volatility'].shift(-1)
+            group['Future_Volatility'] = group['Close'].rolling(window=20).std().shift(-1)
+
+            # Cechy kategoryczne
             group['Day_of_Week'] = group['Date'].dt.dayofweek.astype(str)
             group['Month'] = group['Date'].dt.month.astype(str)
 
-            # Wypełnianie NaN dla kolumn z shift(-1)
+            # Wypełnianie NaN dla targetów
             for col in ['Relative_Returns', 'Log_Returns', 'Future_Volume', 'Future_Volatility']:
                 group[col] = group[col].fillna(0)
 
             # Wypełnianie NaN dla cech technicznych
             technical_features = [
                 'MA10', 'MA50', 'BB_upper', 'BB_lower', 'BB_width', 'Close_to_BB_upper', 'Close_to_BB_lower',
-                'RSI', 'Volatility', 'MACD', 'MACD_Signal', 'Stochastic_K', 'Stochastic_D', 'TR', 'ATR', 'OBV',
-                'Close_momentum_1d', 'Close_momentum_5d', 'Close_vs_MA10', 'Close_vs_MA50',
-                'Close_percentile_20d', 'Close_volatility_5d', 'Close_RSI_divergence'
+                'RSI', 'MACD', 'MACD_Signal', 'MACD_Histogram', 'Stochastic_K', 'Stochastic_D', 'TR', 'ATR', 'OBV',
+                'ADX', 'CCI', 'Tenkan_sen', 'Kijun_sen', 'Senkou_Span_A', 'Senkou_Span_B', 'ROC', 'VWAP',
+                'Momentum_20d', 'Close_to_MA_ratio'
             ]
             for col in technical_features:
                 if col in group.columns:
@@ -130,7 +182,7 @@ class FeatureEngineer:
 
         df = df.groupby('Ticker').apply(apply_features).reset_index(drop=True)
 
-        # Usuwamy tylko wiersze z brakami w kluczowych danych technicznych
+        # Usuwamy tylko wiersze z brakami w kluczowych danych
         required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
         df = df.dropna(subset=required_cols)
         logger.info(f"Długość danych po dropna kluczowych kolumn: {len(df)}")
@@ -139,9 +191,6 @@ class FeatureEngineer:
         for col in df.columns:
             if col not in required_cols and df[col].isna().any():
                 logger.warning(f"Kolumna {col} zawiera wartości NaN dla tickera {df['Ticker'].iloc[0] if 'Ticker' in df else 'nieznany'} (liczba NaN: {df[col].isna().sum()})")
-
-        # Dodatkowe logowanie pierwszych 5 wierszy dla debugowania
-        logger.info(f"Pierwsze 5 wierszy po dodaniu cech:\n{df.head().to_string()}")
 
         return df
 
@@ -173,19 +222,19 @@ class DataPreprocessor:
         df['Day_of_Week'] = df['Date'].dt.dayofweek.astype(str)
         df['Day_of_Week'] = pd.Categorical(df['Day_of_Week'], categories=self.day_of_week_categories, ordered=False)
 
-        # Lista cech numerycznych
+        # Lista cech numerycznych (bez targetów) i targetów do normalizacji
         numeric_features = [
-            "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI", "Volatility",
-            "MACD", "MACD_Signal", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
-            "Close_momentum_1d", "Close_momentum_5d", "Close_vs_MA10", "Close_vs_MA50",
-            "Close_percentile_20d", "Close_volatility_5d", "Close_RSI_divergence",
-            "Relative_Returns", "Log_Returns", "Future_Volume", "Future_Volatility",
-            "BB_width", "Close_to_BB_upper", "Close_to_BB_lower"
+            "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI",
+            "MACD", "MACD_Signal", "MACD_Histogram", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
+            "ADX", "CCI", "Tenkan_sen", "Kijun_sen", "Senkou_Span_A", "Senkou_Span_B", "ROC", "VWAP",
+            "Momentum_20d", "Close_to_MA_ratio", "BB_width", "Close_to_BB_upper", "Close_to_BB_lower",
+            "Relative_Returns"
         ]
 
         # Transformacja logarytmiczna
         log_features = [
-            "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "ATR", "BB_width"
+            "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "ATR", "BB_width",
+            "Tenkan_sen", "Kijun_sen", "Senkou_Span_A", "Senkou_Span_B", "VWAP"
         ]
         for feature in log_features:
             if feature in df.columns:
@@ -193,6 +242,7 @@ class DataPreprocessor:
 
         # Filtruj cechy numeryczne, usuwając te, które mają problemy
         valid_numeric_features = []
+        normalizers = {}
         for feature in numeric_features:
             if feature in df.columns:
                 has_nan = df[feature].isna().any()
@@ -205,30 +255,27 @@ class DataPreprocessor:
                     logger.warning(f"Cecha {feature} ma tylko {unique_count} unikalnych wartości, może powodować problemy z normalizacją")
                     valid_numeric_features.append(feature)
                 else:
-                    valid_numeric_features.append(feature)
-
-        normalizers = {}
-        for feature in valid_numeric_features:
-            if feature in df.columns:
-                try:
-                    normalizer = TorchNormalizer()
-                    values = df[feature].values
-                    df[feature] = normalizer.fit_transform(values)
-                    normalizers[feature] = normalizer
-                    
-                    # Sprawdź wynik normalizacji
-                    if df[feature].isna().any() or np.isinf(df[feature]).any():
-                        logger.error(f"Normalizacja cechy {feature} spowodowała NaN lub inf, usuwam tę cechę")
-                        del normalizers[feature]
+                    try:
+                        normalizer = TorchNormalizer()
+                        values = df[feature].values
+                        df[feature] = normalizer.fit_transform(values)
+                        normalizers[feature] = normalizer
+                        
+                        # Sprawdź wynik normalizacji
+                        if df[feature].isna().any() or np.isinf(df[feature]).any():
+                            logger.error(f"Normalizacja cechy {feature} spowodowała NaN lub inf, usuwam tę cechę")
+                            del normalizers[feature]
+                            if feature in valid_numeric_features:
+                                valid_numeric_features.remove(feature)
+                        else:
+                            logger.info(f"Normalizacja cechy {feature} zakończona pomyślnie: min={df[feature].min():.6f}, max={df[feature].max():.6f}")
+                            
+                    except Exception as e:
+                        logger.error(f"Błąd podczas normalizacji cechy {feature}: {e}")
                         if feature in valid_numeric_features:
                             valid_numeric_features.remove(feature)
-                    else:
-                        logger.info(f"Normalizacja cechy {feature} zakończona pomyślnie: min={df[feature].min():.6f}, max={df[feature].max():.6f}")
-                        
-                except Exception as e:
-                    logger.error(f"Błąd podczas normalizacji cechy {feature}: {e}")
-                    if feature in valid_numeric_features:
-                        valid_numeric_features.remove(feature)
+                if feature not in valid_numeric_features:
+                    valid_numeric_features.append(feature)
 
         with open(self.normalizers_path, 'wb') as f:
             pickle.dump(normalizers, f)
@@ -236,7 +283,7 @@ class DataPreprocessor:
 
         targets = ["Relative_Returns", "Future_Volume", "Future_Volatility"]
         
-        # Lista cech kategorycznych, uwzględniająca Sector
+        # Lista cech kategorycznych
         categorical_features = ["Day_of_Week", "Month", "Sector"]
         valid_categorical_features = [f for f in categorical_features if f in df.columns]
         
@@ -265,7 +312,10 @@ class DataPreprocessor:
             time_varying_unknown_reals=["Relative_Returns"],
             target_normalizer=normalizers.get("Relative_Returns", TorchNormalizer()),
             allow_missing_timesteps=True,
-            add_encoder_length=False
+            add_encoder_length=False,
+            categorical_encoders={
+                'Sector': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=True)
+            }
         )
         logger.info(f"Target normalizer: {dataset.target_normalizer}")
         

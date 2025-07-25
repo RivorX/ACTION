@@ -95,20 +95,22 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
     logger.info(f"Wczytano normalizery z: {config['data']['normalizers_path']}")
     
     # Transformacja logarytmiczna
-    log_features = ["Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "ATR"]
+    log_features = [
+        "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "ATR", "BB_width",
+        "Tenkan_sen", "Kijun_sen", "Senkou_Span_A", "Senkou_Span_B", "VWAP"
+    ]
     
     for feature in log_features:
         if feature in df.columns:
             df[feature] = np.log1p(df[feature].clip(lower=0))
     
-    # Normalizacja z sprawdzeniem dostępności cech
+    # Normalizacja z sprawdzeniem dostępności cech (tylko dla cech wejściowych i Relative_Returns)
     numeric_features = [
-        "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI", "Volatility",
-        "MACD", "MACD_Signal", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
-        "Close_momentum_1d", "Close_momentum_5d", "Close_vs_MA10", "Close_vs_MA50",
-        "Close_percentile_20d", "Close_volatility_5d", "Close_RSI_divergence",
-        "Relative_Returns", "Log_Returns", "Future_Volume", "Future_Volatility",
-        "BB_width", "Close_to_BB_upper", "Close_to_BB_lower"
+        "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI",
+        "MACD", "MACD_Signal", "MACD_Histogram", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
+        "ADX", "CCI", "Tenkan_sen", "Kijun_sen", "Senkou_Span_A", "Senkou_Span_B", "ROC", "VWAP",
+        "Momentum_20d", "Close_to_MA_ratio", "BB_width", "Close_to_BB_upper", "Close_to_BB_lower",
+        "Relative_Returns"
     ]
     
     for feature in numeric_features:
@@ -120,8 +122,8 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
             except Exception as e:
                 logger.error(f"Błąd transformacji cechy {feature}: {e}")
         elif feature in df.columns:
-            logger.warning(f"Brak normalizera dla cechy {feature}")
-    
+            logger.info(f"Pomijanie normalizacji dla cechy {feature}, ponieważ nie jest w normalizers.pkl")
+
     for col in numeric_features:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').astype(float)
@@ -133,14 +135,13 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
     for cat_col in categorical_columns:
         if cat_col in df.columns:
             if cat_col == 'Day_of_Week':
-                df[cat_col] = pd.Categorical(df[cat_col], categories=[0,1,2,3,4,5,6])
-                df[cat_col] = df[cat_col].fillna(0)
+                df[cat_col] = pd.Categorical(df[cat_col], categories=[str(i) for i in range(7)])
+                df[cat_col] = df[cat_col].fillna('0')
             df[cat_col] = df[cat_col].astype(str)
 
     # Filtracja grup z wystarczającą liczbą rekordów
     min_val_records = config['model'].get('min_prediction_length', 1) + config['model'].get('min_encoder_length', 1)
     group_counts = df.groupby('group_id').size().reset_index(name='count')
-    logger.info(f"Liczba rekordów dla każdej grupy:\n{group_counts.to_string()}")
     
     valid_groups = group_counts[group_counts['count'] >= min_val_records]['group_id']
     
@@ -151,7 +152,6 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
     if df.empty or train_df.empty or val_df.empty:
         raise ValueError(f"Zbiory danych są puste po filtrowaniu: df={len(df)}, train_df={len(train_df)}, val_df={len(val_df)}")
 
-    logger.info(f"Statystyki time_idx: {df['time_idx'].describe()}")
     logger.info(f"max_time_idx: {df['time_idx'].max()}, split_idx: {int(df['time_idx'].max() * 0.8)}")
 
     # Tworzenie datasetów treningowego i walidacyjnego

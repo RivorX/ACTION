@@ -5,12 +5,14 @@ from datetime import datetime
 import torch
 from pytorch_forecasting import TimeSeriesDataSet
 from pytorch_forecasting.metrics import QuantileLoss
+import pytorch_forecasting.data.encoders
 import pickle
 from pathlib import Path
 from scripts.data_fetcher import DataFetcher
 from scripts.model import build_model
 from scripts.preprocessor import DataPreprocessor
 from scripts.config_manager import ConfigManager
+
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -44,14 +46,24 @@ def load_data_and_model(config, ticker, temp_raw_data_path, historical_mode=Fals
         logger.error(f"Błąd wczytywania normalizerów: {e}")
         raise
 
-    relative_returns_normalizer_params = normalizers['Relative_Returns'].get_parameters() if 'Relative_Returns' in normalizers else {}
+    # Pobierz parametry normalizera dla Relative_Returns
+    relative_returns_normalizer_params = normalizers.get('Relative_Returns', None)
     target_normalizer_params = dataset.target_normalizer.get_parameters()
-    logger.info(f"Parametry normalizera dla Relative_Returns (normalizers.pkl): {relative_returns_normalizer_params}")
+    logger.info(f"Parametry normalizera dla Relative_Returns (normalizers.pkl): {relative_returns_normalizer_params.get_parameters() if relative_returns_normalizer_params else 'Brak'}")
     logger.info(f"Parametry normalizera dla target (dataset.target_normalizer): {target_normalizer_params}")
-    if not torch.allclose(relative_returns_normalizer_params, target_normalizer_params, rtol=1e-5, atol=1e-8):
-        logger.warning("Normalizery dla Relative_Returns różnią się! Może to powodować błędy w predykcjach.")
+
+    # Sprawdź zgodność normalizerów tylko jeśli relative_returns_normalizer_params istnieje
+    if relative_returns_normalizer_params is not None:
+        try:
+            relative_returns_params_tensor = relative_returns_normalizer_params.get_parameters()
+            if not torch.allclose(relative_returns_params_tensor, target_normalizer_params, rtol=1e-5, atol=1e-8):
+                logger.warning("Normalizery dla Relative_Returns różnią się! Może to powodować błędy w predykcjach.")
+            else:
+                logger.info("Normalizery dla Relative_Returns są zgodne.")
+        except Exception as e:
+            logger.warning(f"Nie można porównać normalizerów dla Relative_Returns: {e}")
     else:
-        logger.info("Normalizery dla Relative_Returns są zgodne.")
+        logger.warning("Brak normalizera dla Relative_Returns w normalizers.pkl, pomijam porównanie.")
 
     try:
         checkpoint = torch.load(config['paths']['checkpoint_path'], map_location=device, weights_only=False)
@@ -97,19 +109,19 @@ def preprocess_data(config, ticker_data, ticker, normalizers, historical_mode=Fa
     ticker_data['group_id'] = ticker
     
     log_features = [
-        "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "ATR", "BB_width"
+        "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "ATR", "BB_width",
+        "Tenkan_sen", "Kijun_sen", "Senkou_Span_A", "Senkou_Span_B", "VWAP"
     ]
     for feature in log_features:
         if feature in ticker_data.columns:
             ticker_data[feature] = np.log1p(ticker_data[feature].clip(lower=0))
 
     numeric_features = [
-        "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI", "Volatility",
-        "MACD", "MACD_Signal", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
-        "Close_momentum_1d", "Close_momentum_5d", "Close_vs_MA10", "Close_vs_MA50",
-        "Close_percentile_20d", "Close_volatility_5d", "Close_RSI_divergence",
-        "Relative_Returns", "Log_Returns", "Future_Volume", "Future_Volatility",
-        "BB_width", "Close_to_BB_upper", "Close_to_BB_lower"
+        "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI",
+        "MACD", "MACD_Signal", "MACD_Histogram", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
+        "ADX", "CCI", "Tenkan_sen", "Kijun_sen", "Senkou_Span_A", "Senkou_Span_B", "ROC", "VWAP",
+        "Momentum_20d", "Close_to_MA_ratio", "BB_width", "Close_to_BB_upper", "Close_to_BB_lower",
+        "Relative_Returns", "Log_Returns", "Future_Volume", "Future_Volatility"
     ]
     for feature in numeric_features:
         if feature in ticker_data.columns and feature in normalizers:
@@ -139,7 +151,10 @@ def generate_predictions(config, dataset, model, ticker_data):
         dataset.get_parameters(),
         ticker_data,
         predict_mode=True,
-        max_prediction_length=config['model']['max_prediction_length']
+        max_prediction_length=config['model']['max_prediction_length'],
+        categorical_encoders={
+            'Sector': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=True)
+        }
     ).to_dataloader(train=False, batch_size=128, num_workers=4)
 
     # Użycie float16 w autocast
