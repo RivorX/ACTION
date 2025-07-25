@@ -1,5 +1,0 @@
-Trening:
-    python start_training.py
-
-Aplikacja:
-    streamlit run app.py

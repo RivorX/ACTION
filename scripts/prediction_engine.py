@@ -96,28 +96,8 @@ def preprocess_data(config, ticker_data, ticker, normalizers, historical_mode=Fa
     ticker_data['time_idx'] = range(len(ticker_data))
     ticker_data['group_id'] = ticker
     
-    # Wypełnianie brakujących danych fundamentalnych zerami i tworzenie flag missing (jeśli nie istnieją)
-    fundamental_features = ['PE_ratio', 'PB_ratio', 'EPS']
-    for feature in fundamental_features:
-        if feature in ticker_data.columns:
-            # Tworzenie flagi missing tylko jeśli nie istnieje
-            missing_flag = f"{feature}_missing"
-            if missing_flag not in ticker_data.columns:
-                ticker_data[missing_flag] = (ticker_data[feature].isna() | (ticker_data[feature] == 0)).astype(int)
-                logger.info(f"Utworzono flagę {missing_flag}, wartości: {ticker_data[missing_flag].unique()}")
-            
-            # Wypełnienie brakujących wartości zerami
-            if ticker_data[feature].isna().any():
-                logger.warning(f"Wypełniam brakujące wartości {feature} zerami dla {ticker}")
-                ticker_data[feature] = ticker_data[feature].fillna(0.0)
-            
-            if ticker_data[feature].isna().all():
-                logger.warning(f"Wypełniam wszystkie wartości {feature} zerami dla {ticker}")
-                ticker_data[feature] = 0.0
-    
     log_features = [
-        "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "ATR", "BB_width",
-        "PE_ratio", "PB_ratio", "EPS"
+        "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "ATR", "BB_width"
     ]
     for feature in log_features:
         if feature in ticker_data.columns:
@@ -129,23 +109,16 @@ def preprocess_data(config, ticker_data, ticker, normalizers, historical_mode=Fa
         "Close_momentum_1d", "Close_momentum_5d", "Close_vs_MA10", "Close_vs_MA50",
         "Close_percentile_20d", "Close_volatility_5d", "Close_RSI_divergence",
         "Relative_Returns", "Log_Returns", "Future_Volume", "Future_Volatility",
-        "BB_width", "Close_to_BB_upper", "Close_to_BB_lower", "PE_ratio", "PB_ratio", "EPS"
+        "BB_width", "Close_to_BB_upper", "Close_to_BB_lower"
     ]
     for feature in numeric_features:
         if feature in ticker_data.columns and feature in normalizers:
             ticker_data[feature] = normalizers[feature].transform(ticker_data[feature].values)
 
-    categorical_columns = ['Day_of_Week', 'Month']
+    categorical_columns = ['Day_of_Week', 'Month', 'Sector']
     for cat_col in categorical_columns:
         if cat_col in ticker_data.columns:
             ticker_data[cat_col] = ticker_data[cat_col].astype(str)
-
-    # Konwersja flag missing na stringi (wymagane przez PyTorch Forecasting)
-    fundamental_missing_flags = ['PE_ratio_missing', 'PB_ratio_missing', 'EPS_missing']
-    for flag in fundamental_missing_flags:
-        if flag in ticker_data.columns:
-            ticker_data[flag] = ticker_data[flag].astype(str)
-            logger.info(f"Przekonwertowano {flag} na string: {ticker_data[flag].unique()}")
 
     logger.info(f"Kolumny ticker_data: {ticker_data.columns.tolist()}")
     return ticker_data, original_close
@@ -155,12 +128,12 @@ def generate_predictions(config, dataset, model, ticker_data):
     logger.info(f"Generowanie predykcji na urządzeniu: {device}")
     model = model.to(device)
     
-    # Upewnienie się, że flagi missing są stringami przed utworzeniem TimeSeriesDataSet
-    fundamental_missing_flags = ['PE_ratio_missing', 'PB_ratio_missing', 'EPS_missing']
-    for flag in fundamental_missing_flags:
-        if flag in ticker_data.columns:
-            ticker_data[flag] = ticker_data[flag].astype(str)
-            logger.info(f"Upewniono się że {flag} jest stringiem: {ticker_data[flag].dtype}")
+    # Upewnienie się, że kolumny kategoryczne są stringami
+    categorical_columns = ['Day_of_Week', 'Month', 'Sector']
+    for cat_col in categorical_columns:
+        if cat_col in ticker_data.columns:
+            ticker_data[cat_col] = ticker_data[cat_col].astype(str)
+            logger.info(f"Upewniono się że {cat_col} jest stringiem: {ticker_data[cat_col].dtype}")
     
     ticker_dataset = TimeSeriesDataSet.from_parameters(
         dataset.get_parameters(),
