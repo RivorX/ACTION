@@ -34,7 +34,7 @@ training:
   early_stopping_patience: 10
   optuna_trials: 5              # Number of trials for hyperparameter optimization
   reduce_lr_patience: 3
-  reduce_lr_factor: 0.5
+  reduce_lr_factor: 0.6
 
 # Paths
 paths:

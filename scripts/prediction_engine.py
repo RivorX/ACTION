@@ -13,9 +13,15 @@ from scripts.model import build_model
 from scripts.preprocessor import DataPreprocessor
 from scripts.config_manager import ConfigManager
 
-
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Lista wszystkich możliwych sektorów
+ALL_SECTORS = [
+    'Technology', 'Healthcare', 'Financials', 'Consumer Discretionary', 'Consumer Staples',
+    'Energy', 'Utilities', 'Industrials', 'Materials', 'Communication Services',
+    'Real Estate', 'Unknown'
+]
 
 def load_data_and_model(config, ticker, temp_raw_data_path, historical_mode=False, trim_days=0):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -85,7 +91,7 @@ def preprocess_data(config, ticker_data, ticker, normalizers, historical_mode=Fa
     ticker_data = ticker_data[ticker_data['Ticker'] == ticker].copy().reset_index(drop=True)
     logger.info(f"Długość ticker_data po filtrowaniu tickera: {len(ticker_data)}")
     ticker_data['Date'] = pd.to_datetime(ticker_data['Date'], utc=True)
-    
+
     # Zapisz original_close przed preprocessingiem
     original_close = ticker_data['Close'].copy()
     
@@ -107,6 +113,19 @@ def preprocess_data(config, ticker_data, ticker, normalizers, historical_mode=Fa
     
     ticker_data['time_idx'] = range(len(ticker_data))
     ticker_data['group_id'] = ticker
+    
+    # Upewnij się, że Day_of_Week ma dokładnie 7 kategorii (0-6)
+    ticker_data['Day_of_Week'] = ticker_data['Date'].dt.dayofweek.astype(str)
+    ticker_data['Day_of_Week'] = pd.Categorical(ticker_data['Day_of_Week'], 
+                                               categories=[str(i) for i in range(7)], 
+                                               ordered=False)
+    
+    # Wypełnij ewentualne NaN w Day_of_Week wartością domyślną (np. '0')
+    if ticker_data['Day_of_Week'].isna().any():
+        logger.warning(f"Znaleziono NaN w Day_of_Week, wypełniam wartością '0'")
+        ticker_data['Day_of_Week'] = ticker_data['Day_of_Week'].cat.add_categories(['0']).fillna('0')
+    
+    ticker_data['Sector'] = pd.Categorical(ticker_data['Sector'], categories=ALL_SECTORS, ordered=False)
     
     log_features = [
         "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "ATR", "BB_width",
@@ -153,7 +172,8 @@ def generate_predictions(config, dataset, model, ticker_data):
         predict_mode=True,
         max_prediction_length=config['model']['max_prediction_length'],
         categorical_encoders={
-            'Sector': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=True)
+            'Sector': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=True),
+            'Day_of_Week': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=True)
         }
     ).to_dataloader(train=False, batch_size=128, num_workers=4)
 

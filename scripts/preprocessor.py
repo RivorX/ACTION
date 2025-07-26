@@ -12,6 +12,13 @@ from pathlib import Path
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# Lista wszystkich możliwych sektorów
+ALL_SECTORS = [
+    'Technology', 'Healthcare', 'Financials', 'Consumer Discretionary', 'Consumer Staples',
+    'Energy', 'Utilities', 'Industrials', 'Materials', 'Communication Services',
+    'Real Estate', 'Unknown'
+]
+
 class FeatureEngineer:
     """Klasa do inżynierii cech dla danych giełdowych."""
     
@@ -156,6 +163,11 @@ class FeatureEngineer:
             group['Day_of_Week'] = group['Date'].dt.dayofweek.astype(str)
             group['Month'] = group['Date'].dt.month.astype(str)
 
+            # Wypełnianie NaN w Day_of_Week
+            if group['Day_of_Week'].isna().any():
+                logger.warning(f"Znaleziono {group['Day_of_Week'].isna().sum()} NaN w Day_of_Week dla tickera {group['Ticker'].iloc[0]}, wypełniam wartością '0'")
+                group['Day_of_Week'] = group['Day_of_Week'].fillna('0')
+
             # Wypełnianie NaN dla targetów
             for col in ['Relative_Returns', 'Log_Returns', 'Future_Volume', 'Future_Volatility']:
                 group[col] = group[col].fillna(0)
@@ -183,9 +195,13 @@ class FeatureEngineer:
         df = df.groupby('Ticker').apply(apply_features).reset_index(drop=True)
 
         # Usuwamy tylko wiersze z brakami w kluczowych danych
-        required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+        required_cols = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 'Ticker', 'Sector']
         df = df.dropna(subset=required_cols)
         logger.info(f"Długość danych po dropna kluczowych kolumn: {len(df)}")
+
+        # Upewnij się, że Sector jest kategoryczny
+        df['Sector'] = pd.Categorical(df['Sector'], categories=ALL_SECTORS, ordered=False)
+        logger.info(f"Kategorie sektorów: {df['Sector'].cat.categories.tolist()}")
 
         # Logowanie brakujących danych w innych kolumnach
         for col in df.columns:
@@ -221,6 +237,10 @@ class DataPreprocessor:
         # Zapewnienie, że Day_of_Week ma wszystkie kategorie (0-6) jako stringi
         df['Day_of_Week'] = df['Date'].dt.dayofweek.astype(str)
         df['Day_of_Week'] = pd.Categorical(df['Day_of_Week'], categories=self.day_of_week_categories, ordered=False)
+
+        # Zapewnienie, że Sector ma wszystkie kategorie
+        df['Sector'] = pd.Categorical(df['Sector'], categories=ALL_SECTORS, ordered=False)
+        logger.info(f"Kategorie sektorów w preprocess_data: {df['Sector'].cat.categories.tolist()}")
 
         # Lista cech numerycznych (bez targetów) i targetów do normalizacji
         numeric_features = [
@@ -287,13 +307,9 @@ class DataPreprocessor:
         categorical_features = ["Day_of_Week", "Month", "Sector"]
         valid_categorical_features = [f for f in categorical_features if f in df.columns]
         
-        # Konwersja Sector na string
-        if 'Sector' in df.columns:
-            df['Sector'] = df['Sector'].astype(str)
-            logger.info(f"Skonwertowano Sector na typ string: {df['Sector'].unique()}")
-
-        # Logowanie kategorii dla Day_of_Week
+        # Logowanie kategorii dla Day_of_Week i Sector
         logger.info(f"Kategorie dla Day_of_Week: {self.day_of_week_categories}")
+        logger.info(f"Kategorie dla Sector: {ALL_SECTORS}")
 
         # Logowanie finalnej listy cech
         logger.info(f"Finalna lista cech numerycznych ({len(valid_numeric_features)}): {valid_numeric_features}")
@@ -314,7 +330,8 @@ class DataPreprocessor:
             allow_missing_timesteps=True,
             add_encoder_length=False,
             categorical_encoders={
-                'Sector': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=True)
+                'Sector': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=False),
+                'Day_of_Week': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=False)
             }
         )
         logger.info(f"Target normalizer: {dataset.target_normalizer}")

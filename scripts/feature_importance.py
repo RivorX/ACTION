@@ -21,6 +21,13 @@ from scripts.config_manager import ConfigManager
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# Lista wszystkich możliwych sektorów
+ALL_SECTORS = [
+    'Technology', 'Healthcare', 'Financials', 'Consumer Discretionary', 'Consumer Staples',
+    'Energy', 'Utilities', 'Industrials', 'Materials', 'Communication Services',
+    'Real Estate', 'Unknown'
+]
+
 class FeatureImportanceAnalyzer:
     """
     Klasa do analizy ważności cech w modelach Temporal Fusion Transformer.
@@ -351,10 +358,9 @@ class FeatureImportanceAnalyzer:
             if hasattr(dataset, 'static_reals'):
                 feature_mapping['static_variables'].extend(dataset.static_reals)
                 
-            # Dodaj Sector do static_categoricals, jeśli istnieje
-            if 'Sector' in dataset.categoricals or 'Sector' in dataset.static_categoricals:
-                feature_mapping['static_variables'].append('Sector')
-                
+            # Dodaj Sector do static_categoricals z pełnym zestawem kategorii
+            feature_mapping['static_variables'].append('Sector')
+            
             logger.info(f"Znaleziono nazwy cech:")
             logger.info(f"  encoder_variables: {len(feature_mapping['encoder_variables'])} cech")
             logger.info(f"  decoder_variables: {len(feature_mapping['decoder_variables'])} cech")

@@ -3,6 +3,7 @@ from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from pytorch_lightning.loggers import CSVLogger
 import torch
 from pytorch_forecasting import TimeSeriesDataSet
+import pytorch_forecasting
 from scripts.data_fetcher import DataFetcher
 from scripts.preprocessor import DataPreprocessor
 from scripts.model import build_model, CustomTemporalFusionTransformer
@@ -17,6 +18,13 @@ from pathlib import Path
 # Konfiguracja logowania
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Lista wszystkich możliwych sektorów
+ALL_SECTORS = [
+    'Technology', 'Healthcare', 'Financials', 'Consumer Discretionary', 'Consumer Staples',
+    'Energy', 'Utilities', 'Industrials', 'Materials', 'Communication Services',
+    'Real Estate', 'Unknown'
+]
 
 class CustomModelCheckpoint(pl.callbacks.Callback):
     """Niestandardowy callback do zapisywania checkpointów."""
@@ -89,6 +97,12 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
     df['time_idx'] = (df['Date'] - df['Date'].min()).dt.days.astype(int)
     df['group_id'] = df['Ticker']
     
+    # Upewnij się, że Sector i Day_of_Week są kategoryczne
+    df['Sector'] = pd.Categorical(df['Sector'], categories=ALL_SECTORS, ordered=False)
+    df['Day_of_Week'] = pd.Categorical(df['Day_of_Week'], categories=[str(i) for i in range(7)], ordered=False)
+    logger.info(f"Kategorie sektorów w train.py: {df['Sector'].cat.categories.tolist()}")
+    logger.info(f"Kategorie dni tygodnia w train.py: {df['Day_of_Week'].cat.categories.tolist()}")
+    
     # Wczytaj normalizery
     with open(config['data']['normalizers_path'], 'rb') as f:
         normalizers = pickle.load(f)
@@ -104,7 +118,7 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
         if feature in df.columns:
             df[feature] = np.log1p(df[feature].clip(lower=0))
     
-    # Normalizacja z sprawdzeniem dostępności cech (tylko dla cech wejściowych i Relative_Returns)
+    # Normalizacja z sprawdzeniem dostępności cech
     numeric_features = [
         "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI",
         "MACD", "MACD_Signal", "MACD_Histogram", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
@@ -135,8 +149,9 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
     for cat_col in categorical_columns:
         if cat_col in df.columns:
             if cat_col == 'Day_of_Week':
-                df[cat_col] = pd.Categorical(df[cat_col], categories=[str(i) for i in range(7)])
-                df[cat_col] = df[cat_col].fillna('0')
+                df[cat_col] = pd.Categorical(df[cat_col], categories=[str(i) for i in range(7)], ordered=False)
+            elif cat_col == 'Sector':
+                df[cat_col] = pd.Categorical(df[cat_col], categories=ALL_SECTORS, ordered=False)
             df[cat_col] = df[cat_col].astype(str)
 
     # Filtracja grup z wystarczającą liczbą rekordów
@@ -155,8 +170,22 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
     logger.info(f"max_time_idx: {df['time_idx'].max()}, split_idx: {int(df['time_idx'].max() * 0.8)}")
 
     # Tworzenie datasetów treningowego i walidacyjnego
-    train_dataset = TimeSeriesDataSet.from_parameters(dataset.get_parameters(), train_df)
-    val_dataset = TimeSeriesDataSet.from_parameters(dataset.get_parameters(), val_df)
+    train_dataset = TimeSeriesDataSet.from_parameters(
+        dataset.get_parameters(),
+        train_df,
+        categorical_encoders={
+            'Sector': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=True),
+            'Day_of_Week': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=True)
+        }
+    )
+    val_dataset = TimeSeriesDataSet.from_parameters(
+        dataset.get_parameters(),
+        val_df,
+        categorical_encoders={
+            'Sector': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=True),
+            'Day_of_Week': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=True)
+        }
+    )
 
     if len(val_dataset) == 0 or len(train_dataset) == 0:
         raise ValueError(f"Zbiory danych są puste: train_dataset={len(train_dataset)}, val_dataset={len(val_dataset)}")

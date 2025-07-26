@@ -10,6 +10,13 @@ import numpy as np
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# Lista wszystkich możliwych sektorów, w tym Unknown
+ALL_SECTORS = [
+    'Technology', 'Healthcare', 'Financials', 'Consumer Discretionary', 'Consumer Staples',
+    'Energy', 'Utilities', 'Industrials', 'Materials', 'Communication Services',
+    'Real Estate', 'Unknown'
+]
+
 class DataFetcher:
     def __init__(self, config: ConfigManager):
         self.config = config
@@ -64,9 +71,12 @@ class DataFetcher:
                                     'Close': 'Close', 'Volume': 'Volume'})
             df['Ticker'] = ticker
 
-            # Dodanie sektora
+            # Dodanie sektora z listy ALL_SECTORS
             sector = info.get('sector', 'Unknown')
+            if sector not in ALL_SECTORS:
+                sector = 'Unknown'
             df['Sector'] = sector
+            logger.info(f"Przypisano sektor dla {ticker}: {sector}")
 
             # Logowanie liczby dni i sprawdzenie luk w danych
             expected_days = (end_date - adjusted_start_date).days * 0.6  # Minimum 60% dni handlowych
@@ -117,6 +127,8 @@ class DataFetcher:
                 logger.warning(f"Pominięto ticker {ticker} z powodu niekompletnych danych")
         df = pd.concat(all_data, ignore_index=True) if all_data else pd.DataFrame()
         if not df.empty:
+            # Upewnij się, że kolumna Sector jest kategoryczna z pełnym zestawem kategorii
+            df['Sector'] = pd.Categorical(df['Sector'], categories=ALL_SECTORS, ordered=False)
             df.to_csv(self.raw_data_path, index=False)
             logger.info(f"Dane zapisane do {self.raw_data_path}")
         else:
