@@ -162,11 +162,17 @@ class FeatureEngineer:
             # Cechy kategoryczne
             group['Day_of_Week'] = group['Date'].dt.dayofweek.astype(str)
             group['Month'] = group['Date'].dt.month.astype(str)
-
-            # Wypełnianie NaN w Day_of_Week
+            # Wypełnianie NaN w Day_of_Week i Month przed przekształceniem na typ kategoryczny
             if group['Day_of_Week'].isna().any():
                 logger.warning(f"Znaleziono {group['Day_of_Week'].isna().sum()} NaN w Day_of_Week dla tickera {group['Ticker'].iloc[0]}, wypełniam wartością '0'")
                 group['Day_of_Week'] = group['Day_of_Week'].fillna('0')
+            if group['Month'].isna().any():
+                logger.warning(f"Znaleziono {group['Month'].isna().sum()} NaN w Month dla tickera {group['Ticker'].iloc[0]}, wypełniam wartością '1'")
+                group['Month'] = group['Month'].fillna('1')
+
+            # Przekształcenie na typ kategoryczny
+            group['Day_of_Week'] = pd.Categorical(group['Day_of_Week'], categories=[str(i) for i in range(7)], ordered=False)
+            group['Month'] = pd.Categorical(group['Month'], categories=[str(i) for i in range(1, 13)], ordered=False)
 
             # Wypełnianie NaN dla targetów
             for col in ['Relative_Returns', 'Log_Returns', 'Future_Volume', 'Future_Volatility']:
@@ -218,8 +224,7 @@ class DataPreprocessor:
         self.feature_engineer = FeatureEngineer()
         self.normalizers_path = Path(config['data']['normalizers_path'])
         self.processed_data_path = Path(config['data']['processed_data_path'])
-        # Definicja wszystkich możliwych kategorii dla Day_of_Week
-        self.day_of_week_categories = [str(i) for i in range(7)]  # ['0', '1', '2', '3', '4', '5', '6']
+        self.day_of_week_categories = [str(i) for i in range(7)]
 
     def preprocess_data(self, df: pd.DataFrame) -> TimeSeriesDataSet:
         if df.empty:
@@ -234,15 +239,12 @@ class DataPreprocessor:
         df['time_idx'] = (df['Date'] - df['Date'].min()).dt.days.astype(int)
         df['group_id'] = df['Ticker']
 
-        # Zapewnienie, że Day_of_Week ma wszystkie kategorie (0-6) jako stringi
         df['Day_of_Week'] = df['Date'].dt.dayofweek.astype(str)
         df['Day_of_Week'] = pd.Categorical(df['Day_of_Week'], categories=self.day_of_week_categories, ordered=False)
 
-        # Zapewnienie, że Sector ma wszystkie kategorie
         df['Sector'] = pd.Categorical(df['Sector'], categories=ALL_SECTORS, ordered=False)
         logger.info(f"Kategorie sektorów w preprocess_data: {df['Sector'].cat.categories.tolist()}")
 
-        # Lista cech numerycznych (bez targetów) i targetów do normalizacji
         numeric_features = [
             "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI",
             "MACD", "MACD_Signal", "MACD_Histogram", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
@@ -251,7 +253,6 @@ class DataPreprocessor:
             "Relative_Returns"
         ]
 
-        # Transformacja logarytmiczna
         log_features = [
             "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "ATR", "BB_width",
             "Tenkan_sen", "Kijun_sen", "Senkou_Span_A", "Senkou_Span_B", "VWAP"
@@ -260,7 +261,6 @@ class DataPreprocessor:
             if feature in df.columns:
                 df[feature] = np.log1p(df[feature].clip(lower=0))
 
-        # Filtruj cechy numeryczne, usuwając te, które mają problemy
         valid_numeric_features = []
         normalizers = {}
         for feature in numeric_features:
@@ -281,7 +281,6 @@ class DataPreprocessor:
                         df[feature] = normalizer.fit_transform(values)
                         normalizers[feature] = normalizer
                         
-                        # Sprawdź wynik normalizacji
                         if df[feature].isna().any() or np.isinf(df[feature]).any():
                             logger.error(f"Normalizacja cechy {feature} spowodowała NaN lub inf, usuwam tę cechę")
                             del normalizers[feature]
@@ -303,15 +302,12 @@ class DataPreprocessor:
 
         targets = ["Relative_Returns", "Future_Volume", "Future_Volatility"]
         
-        # Lista cech kategorycznych
         categorical_features = ["Day_of_Week", "Month", "Sector"]
         valid_categorical_features = [f for f in categorical_features if f in df.columns]
         
-        # Logowanie kategorii dla Day_of_Week i Sector
         logger.info(f"Kategorie dla Day_of_Week: {self.day_of_week_categories}")
         logger.info(f"Kategorie dla Sector: {ALL_SECTORS}")
 
-        # Logowanie finalnej listy cech
         logger.info(f"Finalna lista cech numerycznych ({len(valid_numeric_features)}): {valid_numeric_features}")
         logger.info(f"Finalna lista cech kategorycznych ({len(valid_categorical_features)}): {valid_categorical_features}")
 
@@ -331,7 +327,8 @@ class DataPreprocessor:
             add_encoder_length=False,
             categorical_encoders={
                 'Sector': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=False),
-                'Day_of_Week': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=False)
+                'Day_of_Week': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=False),
+                'Month': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=False)
             }
         )
         logger.info(f"Target normalizer: {dataset.target_normalizer}")

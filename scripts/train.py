@@ -174,16 +174,18 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
         dataset.get_parameters(),
         train_df,
         categorical_encoders={
-            'Sector': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=True),
-            'Day_of_Week': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=True)
+            'Sector': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=False),
+            'Day_of_Week': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=False),
+            'Month': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=False)
         }
     )
     val_dataset = TimeSeriesDataSet.from_parameters(
         dataset.get_parameters(),
         val_df,
         categorical_encoders={
-            'Sector': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=True),
-            'Day_of_Week': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=True)
+            'Sector': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=False),
+            'Day_of_Week': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=False),
+            'Month': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=False)
         }
     )
 

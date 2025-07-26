@@ -116,14 +116,13 @@ def preprocess_data(config, ticker_data, ticker, normalizers, historical_mode=Fa
     
     # Upewnij się, że Day_of_Week ma dokładnie 7 kategorii (0-6)
     ticker_data['Day_of_Week'] = ticker_data['Date'].dt.dayofweek.astype(str)
+    # Wypełnianie NaN w Day_of_Week przed przekształceniem na kategoryczne
+    if ticker_data['Day_of_Week'].isna().any():
+        logger.warning(f"Znaleziono NaN w Day_of_Week, wypełniam wartością '0'")
+        ticker_data['Day_of_Week'] = ticker_data['Day_of_Week'].fillna('0')
     ticker_data['Day_of_Week'] = pd.Categorical(ticker_data['Day_of_Week'], 
                                                categories=[str(i) for i in range(7)], 
                                                ordered=False)
-    
-    # Wypełnij ewentualne NaN w Day_of_Week wartością domyślną (np. '0')
-    if ticker_data['Day_of_Week'].isna().any():
-        logger.warning(f"Znaleziono NaN w Day_of_Week, wypełniam wartością '0'")
-        ticker_data['Day_of_Week'] = ticker_data['Day_of_Week'].cat.add_categories(['0']).fillna('0')
     
     ticker_data['Sector'] = pd.Categorical(ticker_data['Sector'], categories=ALL_SECTORS, ordered=False)
     
@@ -172,8 +171,9 @@ def generate_predictions(config, dataset, model, ticker_data):
         predict_mode=True,
         max_prediction_length=config['model']['max_prediction_length'],
         categorical_encoders={
-            'Sector': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=True),
-            'Day_of_Week': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=True)
+            'Sector': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=False),
+            'Day_of_Week': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=False),
+            'Month': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=False)
         }
     ).to_dataloader(train=False, batch_size=128, num_workers=4)
 

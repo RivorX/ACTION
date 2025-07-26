@@ -32,6 +32,11 @@ class ModelConfig:
         self.config = config
         self.use_quantile_loss = config['model'].get('use_quantile_loss', False)
         self.quantiles = config['model'].get('quantiles', [0.1, 0.5, 0.9]) if self.use_quantile_loss else None
+        self.embedding_sizes = {
+            'Sector': (12, 5),  # 12 kategorii, wymiar osadzenia 5
+            'Day_of_Week': (7, 5),  # 7 kategorii, wymiar osadzenia 5
+            'Month': (12, 5)  # 12 kategorii, wymiar osadzenia 5
+        }
         self.default_hyperparams = self._get_default_hyperparams()
 
     def _get_default_hyperparams(self) -> Dict[str, Any]:
@@ -46,14 +51,16 @@ class ModelConfig:
             "loss": QuantileLoss(quantiles=self.quantiles) if self.use_quantile_loss else MAE(),
             "log_interval": 10,
             "reduce_on_plateau_patience": self.config['training']['early_stopping_patience'],
-            "learning_rate": self.config['model']['learning_rate']
+            "learning_rate": self.config['model']['learning_rate'],
+            "embedding_sizes": self.embedding_sizes
         }
 
     def get_filtered_params(self, hyperparams: Dict[str, Any]) -> Dict[str, Any]:
         """Filtruje parametry do przekazania do TemporalFusionTransformer."""
         valid_keys = [
             "hidden_size", "lstm_layers", "attention_head_size", "dropout", "hidden_continuous_size",
-            "output_size", "loss", "log_interval", "reduce_on_plateau_patience", "learning_rate"
+            "output_size", "loss", "log_interval", "reduce_on_plateau_patience", "learning_rate",
+            "embedding_sizes"
         ]
         return {k: v for k, v in hyperparams.items() if k in valid_keys}
 
@@ -72,7 +79,8 @@ class HyperparamFactory:
             "output_size": len(config.quantiles) if config.use_quantile_loss else 1,
             "loss": QuantileLoss(quantiles=config.quantiles) if config.use_quantile_loss else MAE(),
             "log_interval": 10,
-            "reduce_on_plateau_patience": config.config['training']['early_stopping_patience']
+            "reduce_on_plateau_patience": config.config['training']['early_stopping_patience'],
+            "embedding_sizes": config.embedding_sizes
         }
 
     @staticmethod
@@ -81,7 +89,7 @@ class HyperparamFactory:
         required_keys = [
             "hidden_size", "learning_rate", "attention_head_size", "dropout",
             "lstm_layers", "hidden_continuous_size", "output_size",
-            "log_interval", "reduce_on_plateau_patience"
+            "log_interval", "reduce_on_plateau_patience", "embedding_sizes"
         ]
         filtered_hyperparams = {}
         for key in required_keys:
