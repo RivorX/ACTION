@@ -3,6 +3,9 @@ import pandas as pd
 import torch
 import logging
 import os
+import asyncio
+import aiohttp
+import nest_asyncio
 from datetime import datetime, timedelta
 import sys
 # Dodaj katalog główny projektu do sys.path, żeby import scripts działał
@@ -17,9 +20,18 @@ from app.config_loader import load_config, load_tickers_and_names, load_benchmar
 from app.plot_utils import create_plot, create_historical_plot
 from app.benchmark_utils import create_benchmark_plot, save_benchmark_to_csv, load_benchmark_history
 
+# Zastosuj nest_asyncio, aby umożliwić asynchroniczność w Streamlit
+nest_asyncio.apply()
+
 # Konfiguracja logowania
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+async def fetch_stock_data_async(ticker, start_date, end_date):
+    """Pomocnicza funkcja do asynchronicznego pobierania danych."""
+    async with aiohttp.ClientSession() as session:
+        fetcher = DataFetcher(ConfigManager())
+        return await fetcher.fetch_stock_data(ticker, start_date, end_date, session)
 
 def main():
     """Główna funkcja aplikacji Streamlit."""
@@ -51,20 +63,21 @@ def main():
             ticker_input = [k for k, v in ticker_options.items() if v == ticker_option][0]
 
         if st.button("Generuj predykcje"):
-            try:
-                new_data, dataset, normalizers, model = load_data_and_model(config, ticker_input, temp_raw_data_path)
-                ticker_data, original_close = preprocess_data(config, new_data, ticker_input, normalizers)
-                device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-                with torch.no_grad():
-                    median, lower_bound, upper_bound = generate_predictions(config, dataset, model, ticker_data)
-                create_plot(config, ticker_data, original_close, median, lower_bound, upper_bound, ticker_input)
-            except Exception as e:
-                logger.error(f"Błąd podczas generowania predykcji: {e}")
-                st.error("Wystąpił błąd podczas generowania predykcji.")
-            finally:
-                if os.path.exists(temp_raw_data_path):
-                    os.remove(temp_raw_data_path)
-                    logger.info(f"Tymczasowy plik {temp_raw_data_path} usunięty.")
+            with st.spinner('Trwa generowanie predykcji...'):
+                try:
+                    new_data, dataset, normalizers, model = load_data_and_model(config, ticker_input, temp_raw_data_path)
+                    ticker_data, original_close = preprocess_data(config, new_data, ticker_input, normalizers)
+                    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+                    with torch.no_grad():
+                        median, lower_bound, upper_bound = generate_predictions(config, dataset, model, ticker_data)
+                    create_plot(config, ticker_data, original_close, median, lower_bound, upper_bound, ticker_input)
+                except Exception as e:
+                    logger.error(f"Błąd podczas generowania predykcji: {e}")
+                    st.error("Wystąpił błąd podczas generowania predykcji.")
+                finally:
+                    if os.path.exists(temp_raw_data_path):
+                        os.remove(temp_raw_data_path)
+                        logger.info(f"Tymczasowy plik {temp_raw_data_path} usunięty.")
 
     elif page == "Porównanie predykcji z historią":
         ticker_options = load_tickers_and_names()
@@ -84,41 +97,44 @@ def main():
             ticker_input = [k for k, v in ticker_options.items() if v == ticker_option][0]
 
         if st.button("Porównaj predykcje z historią"):
-            try:
-                max_prediction_length = config['model']['max_prediction_length']
-                trim_date = pd.Timestamp(datetime.now(), tz='UTC') - pd.Timedelta(days=max_prediction_length)
-                start_date = trim_date - pd.Timedelta(days=720)
-                
-                fetcher = DataFetcher(ConfigManager())
-                full_data = fetcher.fetch_stock_data(ticker_input, start_date, datetime.now())
-                if full_data.empty:
-                    raise ValueError("Brak pełnych danych historycznych")
-                
-                full_data = full_data[full_data['Ticker'] == ticker_input].copy()
-                full_data['Date'] = pd.to_datetime(full_data['Date'], utc=True)
-                new_data = full_data[full_data['Date'] <= trim_date].copy()
-                if new_data.empty:
-                    raise ValueError(f"Brak danych przed {trim_date} dla {ticker_input}")
-                
-                new_data.to_csv(temp_raw_data_path, index=False)
-                logger.info(f"Dane dla {ticker_input} zapisane do {temp_raw_data_path}")
-                
-                _, dataset, normalizers, model = load_data_and_model(config, ticker_input, temp_raw_data_path, historical_mode=True)
-                ticker_data, original_close = preprocess_data(config, new_data, ticker_input, normalizers, historical_mode=True)
-                device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-                with torch.no_grad():
-                    median, lower_bound, upper_bound = generate_predictions(config, dataset, model, ticker_data)
-                
-                full_data.set_index('Date', inplace=True)
-                historical_close = full_data['Close']
-                create_historical_plot(config, ticker_data, original_close, median, lower_bound, upper_bound, ticker_input, historical_close)
-            except Exception as e:
-                logger.error(f"Błąd podczas porównywania predykcji z historią: {e}")
-                st.error("Wystąpił błąd podczas porównywania predykcji z historią.")
-            finally:
-                if os.path.exists(temp_raw_data_path):
-                    os.remove(temp_raw_data_path)
-                    logger.info(f"Tymczasowy plik {temp_raw_data_path} usunięty.")
+            with st.spinner('Trwa porównywanie predykcji z historią...'):
+                try:
+                    max_prediction_length = config['model']['max_prediction_length']
+                    trim_date = pd.Timestamp(datetime.now(), tz='UTC') - pd.Timedelta(days=max_prediction_length)
+                    start_date = trim_date - pd.Timedelta(days=720)
+                    
+                    # Asynchroniczne pobieranie danych
+                    full_data = asyncio.get_event_loop().run_until_complete(
+                        fetch_stock_data_async(ticker_input, start_date, datetime.now())
+                    )
+                    if full_data.empty:
+                        raise ValueError("Brak pełnych danych historycznych")
+                    
+                    full_data = full_data[full_data['Ticker'] == ticker_input].copy()
+                    full_data['Date'] = pd.to_datetime(full_data['Date'], utc=True)
+                    new_data = full_data[full_data['Date'] <= trim_date].copy()
+                    if new_data.empty:
+                        raise ValueError(f"Brak danych przed {trim_date} dla {ticker_input}")
+                    
+                    new_data.to_csv(temp_raw_data_path, index=False)
+                    logger.info(f"Dane dla {ticker_input} zapisane do {temp_raw_data_path}")
+                    
+                    _, dataset, normalizers, model = load_data_and_model(config, ticker_input, temp_raw_data_path, historical_mode=True)
+                    ticker_data, original_close = preprocess_data(config, new_data, ticker_input, normalizers, historical_mode=True)
+                    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+                    with torch.no_grad():
+                        median, lower_bound, upper_bound = generate_predictions(config, dataset, model, ticker_data)
+                    
+                    full_data.set_index('Date', inplace=True)
+                    historical_close = full_data['Close']
+                    create_historical_plot(config, ticker_data, original_close, median, lower_bound, upper_bound, ticker_input, historical_close)
+                except Exception as e:
+                    logger.error(f"Błąd podczas porównywania predykcji z historią: {e}")
+                    st.error("Wystąpił błąd podczas porównywania predykcji z historią.")
+                finally:
+                    if os.path.exists(temp_raw_data_path):
+                        os.remove(temp_raw_data_path)
+                        logger.info(f"Tymczasowy plik {temp_raw_data_path} usunięty.")
 
     elif page == "Benchmark":
         st.write("Spółki użyte w benchmarku:", " ".join(benchmark_tickers))
@@ -130,21 +146,12 @@ def main():
                     trim_date = pd.Timestamp(datetime.now(), tz='UTC') - pd.Timedelta(days=max_prediction_length)
                     start_date = trim_date - pd.Timedelta(days=720)
                     
-                    fetcher = DataFetcher(ConfigManager())
-                    historical_close_dict = {}
-                    for ticker in benchmark_tickers:
-                        full_data = fetcher.fetch_stock_data(ticker, start_date, datetime.now())
-                        if full_data.empty:
-                            logger.error(f"Brak danych dla {ticker}")
-                            continue
-                        full_data = full_data[full_data['Ticker'] == ticker].copy()
-                        full_data['Date'] = pd.to_datetime(full_data['Date'], utc=True)
-                        full_data.set_index('Date', inplace=True)
-                        historical_close_dict[ticker] = full_data['Close']
-                    
-                    accuracy_scores = create_benchmark_plot(config, benchmark_tickers, historical_close_dict)
+                    # Uruchom asynchroniczny benchmark
+                    all_results = asyncio.get_event_loop().run_until_complete(
+                        create_benchmark_plot(config, benchmark_tickers, {})
+                    )
                     benchmark_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                    save_benchmark_to_csv(benchmark_date, accuracy_scores)
+                    save_benchmark_to_csv(benchmark_date, all_results)
                 except Exception as e:
                     logger.error(f"Błąd podczas generowania benchmarku: {e}")
                     st.error("Wystąpił błąd podczas generowania benchmarku.")
@@ -156,6 +163,5 @@ def main():
         st.subheader("Historia benchmarków")
         benchmark_history = load_benchmark_history(benchmark_tickers)
         st.dataframe(benchmark_history)
-
 if __name__ == "__main__":
     main()

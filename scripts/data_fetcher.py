@@ -1,3 +1,5 @@
+import asyncio
+import aiohttp
 import yfinance as yf
 import pandas as pd
 from datetime import datetime, timedelta
@@ -6,6 +8,7 @@ from pathlib import Path
 from .config_manager import ConfigManager
 import yaml
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -24,6 +27,7 @@ class DataFetcher:
         self.years = config.get('data.years', 3)
         self.raw_data_path = Path(config.get('data.raw_data_path', 'data/stock_data.csv'))
         self.extra_days = 50  # Bufor na dodatkowe dni
+        self.executor = ThreadPoolExecutor(max_workers=10)  # Thread pool for yfinance calls
 
     def _load_tickers(self, region: str = None) -> list:
         try:
@@ -36,7 +40,7 @@ class DataFetcher:
             logger.error(f"Błąd wczytywania tickerów: {e}")
             return []
 
-    def fetch_stock_data(self, ticker: str, start_date: datetime, end_date: datetime) -> pd.DataFrame:
+    async def fetch_stock_data(self, ticker: str, start_date: datetime, end_date: datetime, session: aiohttp.ClientSession) -> pd.DataFrame:
         try:
             # Ensure start_date and end_date are timezone-naive
             if hasattr(start_date, 'tzinfo') and start_date.tzinfo is not None:
@@ -47,9 +51,10 @@ class DataFetcher:
             # Fetch additional 50 days of data before start_date
             adjusted_start_date = start_date - timedelta(days=self.extra_days)
 
-            # Sprawdzenie dostępności danych w metadanych tickera
-            stock = yf.Ticker(ticker)
-            info = stock.info
+            # Run yfinance calls in a thread to avoid blocking the event loop
+            loop = asyncio.get_event_loop()
+            stock = await loop.run_in_executor(self.executor, lambda: yf.Ticker(ticker))
+            info = await loop.run_in_executor(self.executor, lambda: stock.info)
             first_trade_date = info.get('firstTradeDateEpochUtc', None)
             if first_trade_date:
                 first_trade_date = pd.to_datetime(first_trade_date / 1000, unit='s', utc=True).replace(tzinfo=None)
@@ -58,7 +63,7 @@ class DataFetcher:
                     adjusted_start_date = first_trade_date
 
             # Pobieranie danych z opcją naprawy luk
-            df = stock.history(start=adjusted_start_date, end=end_date, repair=True, auto_adjust=True)
+            df = await loop.run_in_executor(self.executor, lambda: stock.history(start=adjusted_start_date, end=end_date, repair=True, auto_adjust=True))
             if df.empty:
                 logger.warning(f"Brak danych dla {ticker}")
                 return pd.DataFrame()
@@ -86,7 +91,7 @@ class DataFetcher:
                 logger.warning(f"Mała liczba dni dla {ticker}: {actual_days} dni, próbuję pobrać dłuższy zakres")
                 # Próba pobrania dłuższego zakresu danych
                 extended_start_date = adjusted_start_date - timedelta(days=365)  # Dodatkowy rok wstecz
-                df_extended = stock.history(start=extended_start_date, end=end_date, repair=True, auto_adjust=True)
+                df_extended = await loop.run_in_executor(self.executor, lambda: stock.history(start=extended_start_date, end=end_date, repair=True, auto_adjust=True))
                 if not df_extended.empty:
                     df_extended.reset_index(inplace=True)
                     df_extended['Date'] = pd.to_datetime(df_extended['Date'], utc=True)
@@ -114,17 +119,22 @@ class DataFetcher:
             logger.error(f"Błąd pobierania danych dla {ticker}: {e}")
             return pd.DataFrame()
 
-    def fetch_global_stocks(self, region: str = None) -> pd.DataFrame:
+    async def fetch_global_stocks(self, region: str = None) -> pd.DataFrame:
         end_date = datetime.now()
         start_date = end_date - timedelta(days=self.years * 365)
         tickers = self._load_tickers(region)
         all_data = []
-        for ticker in tickers:
-            data = self.fetch_stock_data(ticker, start_date, end_date)
-            if not data.empty and all(col in data.columns for col in ['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 'Ticker', 'Sector']):
-                all_data.append(data)
-            else:
-                logger.warning(f"Pominięto ticker {ticker} z powodu niekompletnych danych")
+
+        async with aiohttp.ClientSession() as session:
+            tasks = [self.fetch_stock_data(ticker, start_date, end_date, session) for ticker in tickers]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for ticker, result in zip(tickers, results):
+                if isinstance(result, pd.DataFrame) and not result.empty and all(col in result.columns for col in ['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 'Ticker', 'Sector']):
+                    all_data.append(result)
+                else:
+                    logger.warning(f"Pominięto ticker {ticker} z powodu niekompletnych danych lub błędu")
+
         df = pd.concat(all_data, ignore_index=True) if all_data else pd.DataFrame()
         if not df.empty:
             # Upewnij się, że kolumna Sector jest kategoryczna z pełnym zestawem kategorii
@@ -134,3 +144,7 @@ class DataFetcher:
         else:
             logger.error("Nie udało się pobrać żadnych danych giełdowych.")
         return df
+
+    def __del__(self):
+        # Clean up the thread pool executor
+        self.executor.shutdown(wait=True)

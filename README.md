@@ -21,7 +21,7 @@ Plik ten ładuje dane, trenuje model (np. Temporal Fusion Transformer) i zapisuj
 Aby uruchomić aplikację Streamlit:
 
 ```bash
-streamlit run app.py
+streamlit run ./app/app.py
 ```
 
 Aplikacja umożliwia wizualizację prognoz oraz ocenę skuteczności modelu.

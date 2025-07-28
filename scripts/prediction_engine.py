@@ -8,6 +8,8 @@ from pytorch_forecasting.metrics import QuantileLoss
 import pytorch_forecasting.data.encoders
 import pickle
 from pathlib import Path
+import asyncio
+import aiohttp
 from scripts.data_fetcher import DataFetcher
 from scripts.model import build_model
 from scripts.preprocessor import DataPreprocessor
@@ -23,19 +25,22 @@ ALL_SECTORS = [
     'Real Estate', 'Unknown'
 ]
 
-def load_data_and_model(config, ticker, temp_raw_data_path, historical_mode=False, trim_days=0):
+async def load_data_and_model_async(config, ticker, temp_raw_data_path, historical_mode=False, trim_days=0):
+    """Asynchroniczna wersja load_data_and_model."""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logger.info(f"Używane urządzenie: {device}")
 
-    fetcher = DataFetcher(ConfigManager())
-    start_date = pd.Timestamp(datetime.now(), tz='UTC') - pd.Timedelta(days=730 + trim_days)
-    new_data = fetcher.fetch_stock_data(ticker, start_date, datetime.now())
-    if new_data.empty:
-        logger.error(f"Nie udało się pobrać danych dla {ticker}")
-        raise ValueError("Brak danych")
+    # Asynchroniczne pobieranie danych
+    async with aiohttp.ClientSession() as session:
+        fetcher = DataFetcher(ConfigManager())
+        start_date = pd.Timestamp(datetime.now(), tz='UTC') - pd.Timedelta(days=730 + trim_days)
+        new_data = await fetcher.fetch_stock_data(ticker, start_date, datetime.now(), session)
+        if new_data.empty:
+            logger.error(f"Nie udało się pobrać danych dla {ticker}")
+            raise ValueError("Brak danych")
 
-    new_data.to_csv(temp_raw_data_path, index=False)
-    logger.info(f"Dane dla {ticker} zapisane do {temp_raw_data_path}, długość: {len(new_data)}")
+        new_data.to_csv(temp_raw_data_path, index=False)
+        logger.info(f"Dane dla {ticker} zapisane do {temp_raw_data_path}, długość: {len(new_data)}")
 
     try:
         dataset = torch.load(config['data']['processed_data_path'], weights_only=False, map_location=device)
@@ -86,6 +91,12 @@ def load_data_and_model(config, ticker, temp_raw_data_path, historical_mode=Fals
         raise
 
     return new_data, dataset, normalizers, model
+
+def load_data_and_model(config, ticker, temp_raw_data_path, historical_mode=False, trim_days=0):
+    """Synchroniczna wersja wywołująca asynchroniczną."""
+    return asyncio.get_event_loop().run_until_complete(
+        load_data_and_model_async(config, ticker, temp_raw_data_path, historical_mode, trim_days)
+    )
 
 def preprocess_data(config, ticker_data, ticker, normalizers, historical_mode=False, trim_days=0):
     ticker_data = ticker_data[ticker_data['Ticker'] == ticker].copy().reset_index(drop=True)
@@ -163,7 +174,6 @@ def generate_predictions(config, dataset, model, ticker_data):
     for cat_col in categorical_columns:
         if cat_col in ticker_data.columns:
             ticker_data[cat_col] = ticker_data[cat_col].astype(str)
-            logger.info(f"Upewniono się że {cat_col} jest stringiem: {ticker_data[cat_col].dtype}")
     
     ticker_dataset = TimeSeriesDataSet.from_parameters(
         dataset.get_parameters(),
@@ -184,13 +194,10 @@ def generate_predictions(config, dataset, model, ticker_data):
 
     pred_array = predictions.output.to('cpu')
     target_normalizer = dataset.target_normalizer
-    logger.info(f"Predykcje Relative Returns przed denormalizacją (pierwsze 5 dla mediany): {pred_array[0, :5, 1].tolist()}")
     
     pred_array = target_normalizer.inverse_transform(pred_array)
-    logger.info(f"Predykcje Relative Returns po denormalizacji (pierwsze 5 dla mediany): {pred_array[0, :5, 1].tolist()}")
     
     last_close_price = ticker_data['Close'].iloc[-1]
-    logger.info(f"Ostatnia cena Close (znormalizowana): {last_close_price}")
     
     try:
         with open(config['data']['normalizers_path'], 'rb') as f:
@@ -201,7 +208,6 @@ def generate_predictions(config, dataset, model, ticker_data):
     
     last_close_denorm = close_normalizer.inverse_transform(torch.tensor([[last_close_price]]).float())
     last_close_denorm = np.expm1(last_close_denorm.numpy())[0, 0]
-    logger.info(f"Ostatnia cena Close (denormalizowana): {last_close_denorm}")
     
     if len(pred_array.shape) == 3:
         relative_returns_median = pred_array[0, :, 1]
