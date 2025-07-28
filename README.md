@@ -119,5 +119,3 @@ Porównanie modeli:
 | **gen3**    | Pierwszy użyteczny model          | 88.9%      | -                     | 90 dni            | Nie        | 60 min/epoka      |
 | **gen3mini**| Lżejsza wersja do szybkich testów | 87.8%      | -                     | 90 dni            | Nie        | 20 min/epoka      |
 | **gen4mini**| Zmniejszona liczba cech, dokładniejszy | 88.0%  | -                    | 90 dni            | Tak        | 20 min/epoka      |
-
-> **Instrukcja**: Wypełnij kolumnę `Dokładność kierunkowa` wartościami z `data/benchmarks_history.csv` lub benchmarku w Streamlit (metryka oceniająca, jak dokładnie model przewiduje wzrost lub spadek ceny zamknięcia). `Dokładność` i `Szybkość treningu` pochodzą z testów. `Szybkość treningu` to subiektywna ocena czasu treningu na epokę.
