@@ -55,14 +55,16 @@ class FeatureImportanceAnalyzer:
         """
         try:
             dataset_path = Path(self.config['data']['processed_data_path'])
-            dataset = torch.load(dataset_path, weights_only=False, map_location='cpu')
+            dataset = torch.load(dataset_path, weights_only=False, map_location=self.device)
             logger.info(f"Dataset wczytany z: {dataset_path}")
             
-            checkpoint_path = Path(self.config['paths']['checkpoint_path'])
+            # Dynamiczne budowanie ścieżki do modelu na podstawie model_name i models_dir
+            model_name = self.config['model_name']
+            checkpoint_path = Path(self.config['paths']['models_dir']) / f"{model_name}_checkpoint.pth"
             if not checkpoint_path.exists():
                 raise FileNotFoundError(f"Checkpoint nie istnieje: {checkpoint_path}")
                 
-            checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+            checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
             hyperparams = checkpoint["hyperparams"]
             if 'hidden_continuous_size' not in hyperparams:
                 hyperparams['hidden_continuous_size'] = self.config['model']['hidden_size'] // 2
@@ -70,8 +72,8 @@ class FeatureImportanceAnalyzer:
             model = build_model(dataset, self.config, hyperparams=hyperparams)
             model.load_state_dict(checkpoint["state_dict"])
             model.eval()
-            model = model.cpu()
-            logger.info("Model wczytany poprawnie i przeniesiony na CPU.")
+            model = model.to(self.device)
+            logger.info(f"Model wczytany poprawnie z {checkpoint_path} i przeniesiony na {self.device}.")
             
             return model, dataset
             
@@ -79,7 +81,7 @@ class FeatureImportanceAnalyzer:
             logger.error(f"Błąd podczas wczytywania modelu lub datasetu: {e}")
             raise
 
-    def analyze_feature_importance(self, output_csv: str = "data/feature_importance.csv"):
+    def analyze_feature_importance(self, output_csv: str = "data/feature_importance_analysis/feature_importance.csv"):
         """
         Oblicza ważność cech i zapisuje wyniki do pliku CSV.
         
@@ -249,6 +251,7 @@ class FeatureImportanceAnalyzer:
             compact_df = importance_df[['Feature', 'Total_Importance', 'Total_Importance_Normalized']].copy()
                 
             output_path = Path(output_csv)
+            output_path.parent.mkdir(parents=True, exist_ok=True)  # Tworzenie katalogu, jeśli nie istnieje
             importance_df.to_csv(output_path, index=False)
             logger.info(f"Ważność cech zapisana do: {output_path}")
             
@@ -268,66 +271,101 @@ class FeatureImportanceAnalyzer:
             logger.error(f"Błąd podczas obliczania ważności cech: {e}")
             raise
             
-    def plot_feature_importance(self, compact_df=None, output_path="data/feature_importance_plot.png"):
+    def plot_feature_importance(self, compact_df=None, output_dir="data/feature_importance_analysis"):
         """
-        Tworzy wykres ważności cech.
+        Tworzy dwa wykresy: dla 10 najważniejszych cech i 10 najmniej istotnych cech.
         
         Args:
             compact_df (pd.DataFrame, optional): DataFrame z kompaktową wersją ważności cech.
-            output_path (str): Ścieżka do pliku z wykresem.
+            output_dir (str): Katalog, gdzie zapisane zostaną wykresy.
         """
         try:
             if compact_df is None:
-                compact_path = Path("data/feature_importance_compact.csv")
+                compact_path = Path(output_dir) / "feature_importance_compact.csv"
                 if compact_path.exists():
                     compact_df = pd.read_csv(compact_path)
                 else:
                     _, compact_df = self.analyze_feature_importance()
                     if compact_df is None:
-                        raise ValueError("Nie udało się utworzyć danych do wykresu.")
+                        raise ValueError("Nie udało się utworzyć danych do wykresów.")
             
+            # Filtracja rzeczywistych cech (usunięcie artefaktów typu 'attention')
             real_features_df = compact_df[
                 (~compact_df['Feature'].str.contains('attention', case=False, na=False)) &
                 (~compact_df['Feature'].str.contains('attention_feature_', case=False, na=False))
             ].copy()
             
             if real_features_df.empty:
-                logger.warning("Brak prawdziwych cech do wyświetlenia na wykresie.")
+                logger.warning("Brak prawdziwych cech do wyświetlenia na wykresach.")
                 return
             
-            real_features_df = real_features_df.sort_values('Total_Importance_Normalized', ascending=True)
-            top_n = min(20, len(real_features_df))
-            plot_df = real_features_df.tail(top_n)
+            # Sortowanie i wybór dokładnie 10 najlepszych cech
+            real_features_df = real_features_df.sort_values('Total_Importance_Normalized', ascending=False)
+            top_10_df = real_features_df.head(10)  # 10 najważniejszych cech
             
-            plt.figure(figsize=(14, 10))
+            # Tworzenie katalogu wyjściowego
+            output_path = Path(output_dir)
+            output_path.mkdir(parents=True, exist_ok=True)
+            
+            # Wykres 1: Top 10 najważniejszych cech
+            plt.figure(figsize=(14, 8))
             sns.set_theme(style="whitegrid")
-            
             ax = sns.barplot(
                 x='Total_Importance_Normalized',
                 y='Feature',
-                data=plot_df,
+                data=top_10_df,
                 palette="viridis",
                 hue='Feature',
+                dodge=False,
                 legend=False
             )
-            
-            plt.title('Ważność cech w modelu Temporal Fusion Transformer', fontsize=16, pad=20)
+            plt.title('Top 10 najważniejszych cech w modelu Temporal Fusion Transformer', fontsize=16, pad=20)
             plt.xlabel('Znormalizowana ważność', fontsize=12)
             plt.ylabel('Cecha', fontsize=12)
-            
-            for i, v in enumerate(plot_df['Total_Importance_Normalized']):
-                ax.text(v + 0.001, i, f"{v:.4f}", va='center', fontsize=10)
-            
+            # Dodanie etykiet wartości z buforem, aby uniknąć nakładania
+            max_value = top_10_df['Total_Importance_Normalized'].max()
+            for i, v in enumerate(top_10_df['Total_Importance_Normalized']):
+                ax.text(v + 0.0005, i, f"{v:.4f}", va='center', fontsize=10)
+            # Ustawienie zakresu osi X z buforem
+            plt.xlim(0, max_value * 1.1)  # Dodanie 10% bufora
             plt.tight_layout()
-            plt_path = Path(output_path)
-            plt.savefig(plt_path, dpi=300, bbox_inches='tight')
+            top_plot_path = output_path / 'top_10_feature_importance.png'
+            plt.savefig(top_plot_path, dpi=300, bbox_inches='tight')
             plt.close()
-            logger.info(f"Wykres ważności cech zapisany do {plt_path}")
+            logger.info(f"Wykres top 10 cech zapisany do {top_plot_path}")
             
-            logger.info(f"Wykres zawiera {len(plot_df)} najważniejszych prawdziwych cech")
+            # Wykres 2: Top 10 najmniej istotnych cech
+            bottom_10_df = real_features_df.tail(10).sort_values('Total_Importance_Normalized')  # 10 najmniej istotnych cech
+            plt.figure(figsize=(14, 8))
+            sns.set_theme(style="whitegrid")
+            ax = sns.barplot(
+                x='Total_Importance_Normalized',
+                y='Feature',
+                data=bottom_10_df,
+                palette="magma",
+                hue='Feature',
+                dodge=False,
+                legend=False
+            )
+            plt.title('Top 10 najmniej istotnych cech w modelu Temporal Fusion Transformer', fontsize=16, pad=20)
+            plt.xlabel('Znormalizowana ważność', fontsize=12)
+            plt.ylabel('Cecha', fontsize=12)
+            # Dodanie etykiet wartości z buforem
+            max_value_bottom = bottom_10_df['Total_Importance_Normalized'].max()
+            for i, v in enumerate(bottom_10_df['Total_Importance_Normalized']):
+                ax.text(v + 0.0005, i, f"{v:.4f}", va='center', fontsize=10)
+            # Ustawienie zakresu osi X z buforem
+            plt.xlim(0, max_value_bottom * 1.1)  # Dodanie 10% bufora
+            plt.tight_layout()
+            bottom_plot_path = output_path / 'bottom_10_feature_importance.png'
+            plt.savefig(bottom_plot_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            logger.info(f"Wykres najmniej istotnych cech zapisany do {bottom_plot_path}")
+            
+            logger.info(f"Wykresy zawierają 10 najważniejszych i 10 najmniej istotnych cech")
             
         except Exception as e:
-            logger.error(f"Błąd podczas tworzenia wykresu: {e}")
+            logger.error(f"Błąd podczas tworzenia wykresów: {e}")
             raise
 
     def _get_feature_names_from_dataset(self, dataset):
@@ -371,7 +409,7 @@ class FeatureImportanceAnalyzer:
             
         return feature_mapping
         
-def calculate_feature_importance(config_path: str = "config/config.yaml", output_csv: str = "data/feature_importance.csv"):
+def calculate_feature_importance(config_path: str = "config/config.yaml", output_csv: str = "data/feature_importance_analysis/feature_importance.csv"):
     """
     Oblicza ważność cech dla modelu TemporalFusionTransformer i zapisuje wyniki do pliku CSV.
     

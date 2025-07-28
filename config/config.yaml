@@ -1,27 +1,32 @@
-# Data settings
-data:
-  years: 3
-  raw_data_path: data/stock_data.csv
-  processed_data_path: data/processed_dataset.pt
-  normalizers_path: data/normalizers.pkl
-  tickers_file: config/training_tickers.yaml
-  company_names_file: config/company_names.yaml
-  benchmark_tickers_file: config/benchmark_tickers.yaml
+# Konfiguracja modelu
+# Ten plik zawiera ustawienia dla  modelu Temporal Fusion Transformer
 
-# Model settings
+# Nazwa modelu
+model_name: Gen_4_1_mini
+
+# Ustawienia danych
+data:
+  raw_data_path: data/stock_data.csv            # Ścieżka do surowych danych giełdowych
+  processed_data_path: data/processed_dataset.pt # Ścieżka do przetworzonego datasetu
+  normalizers_path: data/normalizers.pkl        # Ścieżka do zapisanych normalizerów
+  tickers_file: config/training_tickers.yaml    # Plik z tickerami giełdowymi
+  company_names_file: config/company_names.yaml # Plik z nazwami firm
+  benchmark_tickers_file: config/benchmark_tickers.yaml # Plik z tickerami benchmarkowymi
+
+# Ustawienia modelu
 model:
-  max_prediction_length: 90
-  min_encoder_length: 50         # mniejsze okno wejściowe
-  max_encoder_length: 180        # mniejsze historyczne dane
-  hidden_size: 128               # z 256 → 128
-  attention_head_size: 4         # z 8 → 4
-  dropout: 0.3                   # mniejszy dropout dla stabilności
-  learning_rate: 0.001
-  lstm_layers: 2                 # z 4 → 2 (oszczędność pamięci)
-  loss: QuantileLoss
-  use_quantile_loss: true
-  quantiles: [0.1, 0.5, 0.9]
-  # Hyperparameter ranges for Optuna
+  max_prediction_length: 90  # Maksymalna długość predykcji (dni)
+  min_encoder_length: 50     # Minimalna długość danych wejściowych
+  max_encoder_length: 180    # Maksymalna długość danych historycznych
+  hidden_size: 128           # Rozmiar warstwy ukrytej
+  attention_head_size: 4     # Liczba głowic uwagi
+  dropout: 0.3               # Współczynnik dropout dla stabilności
+  learning_rate: 0.001       # Współczynnik uczenia
+  lstm_layers: 2             # Liczba warstw LSTM
+  loss: QuantileLoss         # Funkcja straty
+  use_quantile_loss: true    # Włączenie straty kwantylowej
+  quantiles: [0.1, 0.5, 0.9] # Kwantyle dla predykcji
+  # Zakresy hiperparametrów dla Optuna
   min_hidden_size: 64
   max_hidden_size: 128
   min_lstm_layers: 1
@@ -29,16 +34,15 @@ model:
   min_attention_head_size: 2
   max_attention_head_size: 4
 
-# Training settings
+# Ustawienia treningu
 training:
-  max_epochs: 100
-  batch_size: 64
-  early_stopping_patience: 10
-  optuna_trials: 5              # Number of trials for hyperparameter optimization
-  reduce_lr_patience: 3
-  reduce_lr_factor: 0.6
+  max_epochs: 100               # Maksymalna liczba epok
+  batch_size: 64                # Rozmiar partii
+  early_stopping_patience: 10   # Cierpliwość dla wczesnego zatrzymania
+  optuna_trials: 5              # Liczba prób dla optymalizacji hiperparametrów
+  reduce_lr_patience: 3         # Cierpliwość dla redukcji współczynnika uczenia
+  reduce_lr_factor: 0.6         # Czynnik redukcji współczynnika uczenia
 
-# Paths
+# Ścieżki do zapisu
 paths:
-  checkpoint_path: 'models/best_tft_checkpoint.pth'
-  model_save_path: 'models/full_model.pth'
+  models_dir: models             # Katalog do zapisu modeli

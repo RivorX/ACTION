@@ -6,6 +6,7 @@ from scripts.preprocessor import DataPreprocessor
 from scripts.train import train_model
 from scripts.config_manager import ConfigManager
 import logging
+from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -28,7 +29,6 @@ async def start_training(regions: str = 'global', years: int = 3, use_optuna: bo
         if years < 3:
             logger.warning(f"Podano {years} lat. Minimalna liczba lat to 3. Ustawiam domyślnie na 3 lata.")
             years = 3
-        config['data']['years'] = years
         logger.info(f"Ustawiono liczbę lat danych: {years}")
 
         # Przetwarzanie wybranych regionów
@@ -42,7 +42,7 @@ async def start_training(regions: str = 'global', years: int = 3, use_optuna: bo
         logger.info(f"Pobieranie danych dla regionów: {', '.join(selected_regions)}...")
 
         # Wczytaj tickery dla wybranych regionów
-        fetcher = DataFetcher(config_manager)
+        fetcher = DataFetcher(config_manager, years=years)  # Przekazanie years do DataFetcher
         all_tickers = []
         if 'all' in selected_regions:
             with open(config['data']['tickers_file'], 'r') as f:
@@ -70,6 +70,13 @@ async def start_training(regions: str = 'global', years: int = 3, use_optuna: bo
         logger.info("Preprocessing danych...")
         preprocessor = DataPreprocessor(config)
         dataset = preprocessor.preprocess_data(df)
+
+        # Dynamiczne ustawienie ścieżek na podstawie model_name
+        model_name = config['model_name']
+        config['paths']['checkpoint_path'] = str(Path(config['paths']['models_dir']) / f"{model_name}_checkpoint.pth")
+        config['paths']['model_save_path'] = str(Path(config['paths']['models_dir']) / f"{model_name}.pth")
+        logger.info(f"Ścieżka checkpointu: {config['paths']['checkpoint_path']}")
+        logger.info(f"Ścieżka zapisu modelu: {config['paths']['model_save_path']}")
 
         # Trenuj model
         logger.info("Trenowanie modelu...")

@@ -131,7 +131,7 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
         if feature in df.columns and feature in normalizers:
             try:
                 df[feature] = normalizers[feature].transform(df[feature].values)
-                if df[feature].isna().any() or np.isinf(df[feature]).any():
+                if df[feature].isna().any() or np.isinf(df[feature].any()):
                     logger.error(f"Transformacja cechy {feature} spowodowała NaN lub inf")
             except Exception as e:
                 logger.error(f"Błąd transformacji cechy {feature}: {e}")
@@ -256,8 +256,3 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
     torch.save(checkpoint, Path(config['paths']['model_save_path']))
     logger.info(f"Model zapisany w: {config['paths']['model_save_path']}")
     return final_model
-
-if __name__ == "__main__":
-    config = ConfigManager().config
-    dataset = torch.load(config['data']['processed_data_path'], weights_only=False)
-    train_model(dataset, config, use_optuna=True, continue_training=False)

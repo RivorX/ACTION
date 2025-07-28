@@ -21,20 +21,37 @@ ALL_SECTORS = [
 ]
 
 class DataFetcher:
-    def __init__(self, config_manager: ConfigManager):
+    def __init__(self, config_manager: ConfigManager, years: int = 3):
+        """
+        Inicjalizuje DataFetcher z config_managerem i liczbą lat danych do pobrania.
+
+        Args:
+            config_manager (ConfigManager): Obiekt ConfigManager z konfiguracją.
+            years (int): Liczba lat danych historycznych do pobrania.
+        """
         self.config = config_manager.config  # Używamy atrybutu .config
+        self.years = years
         # Pobierz ścieżki bezpośrednio z config, bez domyślnych wartości
         try:
             self.tickers_file = Path(self.config['data']['tickers_file'])
-            self.years = self.config['data']['years']
             self.raw_data_path = Path(self.config['data']['raw_data_path'])
         except KeyError as e:
             logger.error(f"Missing key in config: {e}")
             raise ValueError(f"Configuration error: missing key {e} in config.yaml")
         self.extra_days = 50  # Bufor na dodatkowe dni
         self.executor = ThreadPoolExecutor(max_workers=10)  # Thread pool for yfinance calls
+        logger.info(f"Inicjalizacja DataFetcher z {self.years} latami danych.")
 
     def _load_tickers(self, region: str = None) -> list:
+        """
+        Wczytuje tickery dla podanego regionu z pliku YAML.
+
+        Args:
+            region (str): Region, dla którego wczytywane są tickery (np. 'poland', 'usa').
+
+        Returns:
+            list: Lista tickerów dla danego regionu.
+        """
         try:
             with open(self.tickers_file, 'r') as f:
                 tickers_config = yaml.safe_load(f)
@@ -46,6 +63,18 @@ class DataFetcher:
             return []
 
     async def fetch_stock_data(self, ticker: str, start_date: datetime, end_date: datetime, session: aiohttp.ClientSession) -> pd.DataFrame:
+        """
+        Pobiera dane giełdowe dla pojedynczego tickera.
+
+        Args:
+            ticker (str): Symbol tickera.
+            start_date (datetime): Data początkowa.
+            end_date (datetime): Data końcowa.
+            session (aiohttp.ClientSession): Sesja aiohttp.
+
+        Returns:
+            pd.DataFrame: Dane giełdowe dla tickera.
+        """
         try:
             # Ensure start_date and end_date are timezone-naive
             if hasattr(start_date, 'tzinfo') and start_date.tzinfo is not None:
@@ -125,6 +154,15 @@ class DataFetcher:
             return pd.DataFrame()
 
     async def fetch_global_stocks(self, region: str = None) -> pd.DataFrame:
+        """
+        Pobiera dane giełdowe dla wszystkich tickerów z wybranego regionu.
+
+        Args:
+            region (str, optional): Region, dla którego pobierane są dane. Jeśli None, używa tickerów z configu.
+
+        Returns:
+            pd.DataFrame: Połączony DataFrame z danymi giełdowymi.
+        """
         end_date = datetime.now()
         start_date = end_date - timedelta(days=self.years * 365)
         tickers = self._load_tickers(region)
@@ -162,3 +200,9 @@ class DataFetcher:
     def __del__(self):
         # Clean up the thread pool executor
         self.executor.shutdown(wait=True)
+
+if __name__ == "__main__":
+    config_manager = ConfigManager()
+    # Domyślna liczba lat dla testów
+    fetcher = DataFetcher(config_manager, years=3)
+    asyncio.run(fetcher.fetch_global_stocks())

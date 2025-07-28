@@ -10,6 +10,7 @@ import pickle
 from pathlib import Path
 import asyncio
 import aiohttp
+import os
 from scripts.data_fetcher import DataFetcher
 from scripts.model import build_model
 from scripts.preprocessor import DataPreprocessor
@@ -75,14 +76,21 @@ async def load_data_and_model_async(config, ticker, temp_raw_data_path, historic
         logger.warning("Brak normalizera dla Relative_Returns w normalizers.pkl, pomijam porównanie.")
 
     try:
-        checkpoint = torch.load(config['paths']['checkpoint_path'], map_location=device, weights_only=False)
+        # Tworzenie ścieżki do modelu na podstawie model_name i models_dir
+        model_name = config['model_name']
+        model_path = os.path.join(config['paths']['models_dir'], f"{model_name}_checkpoint.pth")
+        if not os.path.exists(model_path):
+            logger.error(f"Plik modelu {model_path} nie istnieje.")
+            raise FileNotFoundError(f"Plik modelu {model_path} nie istnieje.")
+
+        checkpoint = torch.load(model_path, map_location=device, weights_only=False)
         hyperparams = checkpoint["hyperparams"]
         if 'hidden_continuous_size' not in hyperparams:
             hyperparams['hidden_continuous_size'] = config['model']['hidden_size'] // 2
         model = build_model(dataset, config, hyperparams=hyperparams)
         model.load_state_dict(checkpoint["state_dict"])
         model = model.to(device)
-        logger.info(f"Model wczytany i przeniesiony na urządzenie: {device}")
+        logger.info(f"Model {model_name} wczytany z {model_path} i przeniesiony na urządzenie: {device}")
         logger.info(f"Model parameters device: {next(model.parameters()).device if model.parameters() else 'No parameters'}")
     except Exception as e:
         logger.error(f"Błąd wczytywania modelu: {e}")
