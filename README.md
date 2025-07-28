@@ -1,72 +1,123 @@
-# 📈 Model predykcyjny kursu akcji
+# 📈 Model Predykcyjny Kursu Akcji
 
-Projekt zawiera model trenowany na danych giełdowych oraz prostą aplikację webową do prezentacji wyników.
+Ten projekt implementuje model predykcyjny kursu akcji oparty na danych giełdowych, wykorzystujący Temporal Fusion Transformer (TFT). Zawiera również aplikację webową zbudowaną w Streamlit, która umożliwia wizualizację prognoz, porównanie predykcji z danymi historycznymi oraz ocenę skuteczności modelu poprzez benchmark.
 
 ---
 
-## 🚀 Trening modelu
+## 🚀 Funkcjonalności
 
+- **Trening modelu**: Skrypt `start_training.py` pozwala na pobranie danych giełdowych, trening modelu i zapis wyników.
+- **Predykcje przyszłości**: Aplikacja Streamlit generuje prognozy cen akcji dla wybranych tickerów (np. `CDR.WA`).
+- **Porównanie z historią**: Możliwość porównania predykcji z rzeczywistymi danymi historycznymi.
+- **Benchmark**: Ocena skuteczności modelu na zestawie tickerów z metrykami takimi jak Dokładność i Dokładność kierunkowa.
+
+---
+
+## 🖥️ Uruchomienie projektu
+
+### Trening modelu
 Aby rozpocząć trening modelu, uruchom:
-
 ```bash
 python start_training.py
 ```
+Skrypt pobiera dane giełdowe (za pomocą `yfinance`), trenuje model TFT i zapisuje wyniki w folderze `models`.
 
-Plik ten ładuje dane, trenuje model (np. Temporal Fusion Transformer) i zapisuje wyniki do pliku.
-
----
-
-## 🖥️ Aplikacja webowa
-
+### Aplikacja webowa
 Aby uruchomić aplikację Streamlit:
-
 ```bash
-streamlit run ./app/app.py
+streamlit run app/app.py
 ```
-
-Aplikacja umożliwia wizualizację prognoz oraz ocenę skuteczności modelu.
+Aplikacja umożliwia:
+- Generowanie predykcji dla wybranego tickera.
+- Porównanie predykcji z danymi historycznymi.
+- Wyświetlenie wyników benchmarku dla zestawu tickerów.
 
 ---
 
-## ⚠️ Uwaga dotycząca PE i PB ratio
+## 📊 Przykłady wyników
 
-Biblioteka `yfinance` nie udostępnia **historycznych** wartości wskaźników fundamentalnych takich jak:
+### Predykcje dla `CDR.WA`
+Poniżej przedstawiono przykład predykcji cen zamknięcia dla tickera `CDR.WA` na kolejne dni, z kwantylami 10% i 90%.
 
-* PE ratio (Price to Earnings)
-* PB ratio (Price to Book)
+![Predykcje dla CDR.WA](docs/images/predykcje.png)
 
-Możliwe jest jedynie pobranie ich **aktualnych wartości** z poziomu `Ticker().info`. 
+### Porównanie predykcji z historią dla `CDR.WA`
+Wykres porównuje przewidywane ceny zamknięcia z rzeczywistymi danymi historycznymi dla `CDR.WA`.
+
+![Porównanie predykcji z historią dla CDR.WA](docs/images/porownanie_predykcji_z_historia.png)
+
+### Benchmark
+#### Wykres benchmarku
+Wykres porównuje predykcje z danymi historycznymi dla tickerów zdefiniowanych w pliku `config/benchmark_tickers.yaml` (unikalne tickery, różne od tych użytych w treningu).
+
+![Wykres benchmarku](docs/images/benchmark_wykres.png)
+
+#### Tabela metryk benchmarku
+Tabela przedstawia metryki skuteczności modelu dla tickerów w benchmarku, takie jak Accuracy, MAPE, MAE i Directional Accuracy.
+
+![Tabela metryk benchmarku](docs/images/benchmark.png)
+
+---
+
+## ⚠️ Ograniczenia danych
+
+Biblioteka `yfinance` używana do pobierania danych giełdowych nie dostarcza **historycznych** wartości wskaźników fundamentalnych, takich jak:
+- **PE ratio** (Price to Earnings)
+- **PB ratio** (Price to Book)
+
+Dostępne są jedynie **aktualne wartości** tych wskaźników poprzez metodę `Ticker().info`.
+
 ---
 
 ## 📁 Struktura projektu
 
 ```
-├── app.py                  # Aplikacja Streamlit
-├── start_training.py       # Skrypt treningowy
-├── model/                  # Pliki modelu i wag
-├── data/                   # Dane rynkowe
-└── README.md               # Dokumentacja
+├── app/
+│   ├── app.py              # Aplikacja Streamlit
+│   ├── benchmark_utils.py  # Funkcje do generowania benchmarku
+│   ├── config_loader.py    # Wczytywanie konfiguracji i tickerów
+│   ├── plot_utils.py       # Funkcje do tworzenia wykresów
+├── scripts/
+│   ├── config_manager.py   # Zarządzanie konfiguracją
+│   ├── data_fetcher.py     # Pobieranie danych giełdowych
+│   ├── feature_importance.py # Analiza ważności cech
+│   ├── model.py            # Definicja modelu
+│   ├── prediction_engine.py # Logika predykcji
+│   ├── preprocessor.py     # Przetwarzanie danych
+│   ├── train.py            # Trening modelu
+├── config/
+│   ├── config.yaml         # Plik konfiguracyjny
+│   ├── tickers.yaml        # Lista tickerów
+│   ├── benchmark_tickers.yaml # Tickery do benchmarku
+│   ├── company_names.yaml  # Nazwy spółek
+├── data/                   # Dane surowe i przetworzone
+├── models/                 # Zapisane modele
+├── start_training.py       # Skrypt do treningu modelu
+├── README.md               # Dokumentacja projektu
+├── requirements.txt        # Lista zależności
 ```
 
 ---
 
-## 📌 Wymagania
+## 🛠️ Wymagania
 
-* Python 3.9+
-* streamlit
-* yfinance
-* pytorch / pytorch-lightning
-* pandas, numpy, matplotlib
-
-Zainstaluj zależności:
-
+Projekt wymaga Pythona 3.9+ oraz zależności wymienionych w pliku `requirements.txt`. Aby zainstalować zależności, wykonaj:
 ```bash
 pip install -r requirements.txt
 ```
 
+> **Uwaga**: Pełna lista bibliotek (np. `streamlit`, `yfinance`, `pytorch`, `pandas`) znajduje się w `requirements.txt`. Upewnij się, że środowisko wirtualne jest aktywne przed instalacją.
 
-## Modele
+---
 
-- **gen3** – pełna wersja działającego modelu.
-- **gen3mini** – zminiaturyzowana wersja modelu, lżejsza i szybsza w działaniu.
-- **gen4mini** – wersja zredukowana, z mniejszą liczbą redundantnych cech (featureów), zoptymalizowana pod względem efektywności.
+## 📚 Modele
+
+Porównanie modeli:
+
+| Model       | Opis                              | Dokładność | Dokładność kierunkowa | Długość predykcji | Czy działa | Szybkość treningu |
+|-------------|-----------------------------------|------------|-----------------------|-------------------|------------|-------------------|
+| **gen3**    | Pierwszy użyteczny model          | 88.9%      | -                     | 90 dni            | Nie        | 60 min/epoka      |
+| **gen3mini**| Lżejsza wersja do szybkich testów | 87.8%      | -                     | 90 dni            | Nie        | 20 min/epoka      |
+| **gen4mini**| Zmniejszona liczba cech, dokładniejszy | 88.0%  | -                    | 90 dni            | Tak        | 20 min/epoka      |
+
+> **Instrukcja**: Wypełnij kolumnę `Dokładność kierunkowa` wartościami z `data/benchmarks_history.csv` lub benchmarku w Streamlit (metryka oceniająca, jak dokładnie model przewiduje wzrost lub spadek ceny zamknięcia). `Dokładność` i `Szybkość treningu` pochodzą z testów. `Szybkość treningu` to subiektywna ocena czasu treningu na epokę.
