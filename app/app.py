@@ -174,7 +174,9 @@ def main():
         if st.button("Generuj benchmark"):
             with st.spinner('Trwa generowanie benchmarku...'):
                 try:
-                    all_results = asyncio.get_event_loop().run_until_complete(
+                    # Use existing event loop for Streamlit compatibility
+                    loop = asyncio.get_event_loop()
+                    all_results = loop.run_until_complete(
                         create_benchmark_plot(config, benchmark_tickers, {})
                     )
                     benchmark_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')

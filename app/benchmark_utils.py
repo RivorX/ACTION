@@ -45,7 +45,7 @@ async def process_ticker(ticker, full_data, config, temp_raw_data_path, max_pred
             return ticker, None
 
         new_data.reset_index().to_csv(temp_raw_data_path, index=False)
-        logger.info(f"Data for {ticker} saved to {temp_raw_data_path}")
+        logger.info(f"Data for {ticker} saved to {temp_raw_data_path}, długość: {len(new_data)}")
 
         # Preprocess data
         ticker_data, original_close = preprocess_data(config, new_data.reset_index(), ticker, normalizers, historical_mode=True)
@@ -128,7 +128,6 @@ async def process_ticker(ticker, full_data, config, temp_raw_data_path, max_pred
         logger.error(f"Error processing {ticker}: {e}")
         return ticker, None
     finally:
-        # Clean up ticker-specific resources
         if os.path.exists(temp_raw_data_path):
             os.remove(temp_raw_data_path)
             logger.info(f"Temporary file {temp_raw_data_path} removed.")
@@ -154,20 +153,122 @@ async def create_benchmark_plot(config, benchmark_tickers, historical_close_dict
 
     # Load model once
     logger.info("Loading model and data...")
-    model = None
-    dataset = None
-    normalizers = None
+    first_ticker = next(iter(ticker_data_dict))
+    first_data = ticker_data_dict[first_ticker]
+    first_data.reset_index().to_csv(temp_raw_data_path, index=False)
+    _, dataset, normalizers, model = load_data_and_model(config, first_ticker, temp_raw_data_path, historical_mode=True)
+    logger.info(f"Model, dataset, and normalizers loaded successfully for {first_ticker}")
+
     try:
-        first_ticker = next(iter(ticker_data_dict))
-        first_data = ticker_data_dict[first_ticker]
-        first_data.reset_index().to_csv(temp_raw_data_path, index=False)
-        _, dataset, normalizers, model = load_data_and_model(config, first_ticker, temp_raw_data_path, historical_mode=True)
-        if os.path.exists(temp_raw_data_path):
-            os.remove(temp_raw_data_path)
-    except Exception as e:
-        logger.error(f"Error loading model: {e}")
-        return accuracy_scores
+        # Process tickers asynchronously
+        tasks = [
+            process_ticker(ticker, data, config, temp_raw_data_path, max_prediction_length, trim_date, dataset, normalizers, model)
+            for ticker, data in ticker_data_dict.items()
+        ]
+        results = await asyncio.gather(*tasks)
+
+        for ticker, result in results:
+            if result is not None and isinstance(result, dict):
+                all_results[ticker] = result
+                accuracy_scores[ticker] = result['metrics']['Accuracy']
+            else:
+                logger.warning(f"Skipped ticker {ticker} due to invalid result data.")
+                accuracy_scores[ticker] = 0.0
+
+        # Create plot
+        fig = go.Figure()
+        colors = ['#0000FF', '#00FF00', '#FF0000', '#800080', '#FFA500', '#00FFFF', '#FF00FF', '#FFFF00', '#A52A2A', '#808080']
+
+        for idx, (ticker, data) in enumerate(all_results.items()):
+            color_idx = idx % len(colors)
+            historical_dates = data['historical_dates']
+            pred_dates = data['pred_dates']
+            historical_close = data['historical_close']
+            historical_pred_close = data['historical_pred_close']
+            predictions = data['predictions']
+
+            all_dates = historical_dates + pred_dates
+            all_close = historical_close + historical_pred_close
+            all_pred_close = [None] * len(historical_dates) + predictions
+
+            if len(all_dates) != len(all_close) or len(all_dates) != len(all_pred_close):
+                logger.error(f"Length mismatch for {ticker}: all_dates={len(all_dates)}, all_close={len(all_close)}, all_pred_close={len(all_pred_close)}")
+                continue
+
+            plot_data = pd.DataFrame({
+                'Date': all_dates,
+                'Close': all_close,
+                'Predicted_Close': all_pred_close
+            })
+            plot_data['Date'] = pd.to_datetime(plot_data['Date'], utc=True)
+
+            fig.add_trace(go.Scatter(
+                x=plot_data['Date'],
+                y=plot_data['Close'],
+                mode='lines',
+                name=f'{ticker} (Historia)',
+                line=dict(color=colors[color_idx]),
+                legendgroup=ticker
+            ))
+            fig.add_trace(go.Scatter(
+                x=plot_data['Date'],
+                y=plot_data['Predicted_Close'],
+                mode='lines',
+                name=f'{ticker} (Predykcja)',
+                line=dict(color=colors[color_idx], dash='dash'),
+                legendgroup=ticker
+            ))
+
+            split_date = pd.Timestamp(pred_dates[0]).isoformat()
+            fig.add_shape(
+                type="line",
+                x0=split_date,
+                x1=split_date,
+                y0=0,
+                y1=1,
+                xref="x",
+                yref="paper",
+                line=dict(color="red", width=2, dash="dash")
+            )
+            fig.add_annotation(
+                x=split_date,
+                y=1.05,
+                xref="x",
+                yref="paper",
+                text="Początek predykcji",
+                showarrow=False,
+                font=dict(size=12),
+                align="center"
+            )
+
+        fig.update_layout(
+            title="Porównanie predykcji z historią dla wybranych spółek",
+            xaxis_title="Data",
+            yaxis_title="Cena zamknięcia",
+            showlegend=True,
+            xaxis=dict(rangeslider=dict(visible=True), type='date'),
+            legend=dict(
+                itemclick="toggle",
+                itemdoubleclick="toggleothers"
+            )
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Display metrics
+        st.subheader("Metryki predykcji dla każdej spółki")
+        metrics_df = pd.DataFrame({
+            ticker: data['metrics'] for ticker, data in all_results.items()
+        }).T.reset_index().rename(columns={'index': 'Ticker'})
+        st.dataframe(metrics_df.style.format({
+            'Accuracy': '{:.2f}%',
+            'MAPE': '{:.2f}%',
+            'MAE': '{:.2f}',
+            'Directional_Accuracy': '{:.2f}%'
+        }))
+
     finally:
+        # Clean up resources
         if model is not None:
             del model
         if dataset is not None:
@@ -177,115 +278,11 @@ async def create_benchmark_plot(config, benchmark_tickers, historical_close_dict
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             logger.info(f"GPU memory after cleanup: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
+        if os.path.exists(temp_raw_data_path):
+            os.remove(temp_raw_data_path)
+            logger.info(f"Temporary file {temp_raw_data_path} removed.")
 
-    # Process tickers asynchronously
-    tasks = [
-        process_ticker(ticker, data, config, temp_raw_data_path, max_prediction_length, trim_date, dataset, normalizers, model)
-        for ticker, data in ticker_data_dict.items()
-    ]
-    results = await asyncio.gather(*tasks)
-
-    for ticker, result in results:
-        if result is not None and isinstance(result, dict):
-            all_results[ticker] = result
-            accuracy_scores[ticker] = result['metrics']['Accuracy']
-        else:
-            logger.warning(f"Skipped ticker {ticker} due to invalid result data.")
-            accuracy_scores[ticker] = 0.0
-
-    # Create plot
-    fig = go.Figure()
-    colors = ['#0000FF', '#00FF00', '#FF0000', '#800080', '#FFA500', '#00FFFF', '#FF00FF', '#FFFF00', '#A52A2A', '#808080']
-
-    for idx, (ticker, data) in enumerate(all_results.items()):
-        color_idx = idx % len(colors)
-        historical_dates = data['historical_dates']
-        pred_dates = data['pred_dates']
-        historical_close = data['historical_close']
-        historical_pred_close = data['historical_pred_close']
-        predictions = data['predictions']
-
-        all_dates = historical_dates + pred_dates
-        all_close = historical_close + historical_pred_close
-        all_pred_close = [None] * len(historical_dates) + predictions
-
-        if len(all_dates) != len(all_close) or len(all_dates) != len(all_pred_close):
-            logger.error(f"Length mismatch for {ticker}: all_dates={len(all_dates)}, all_close={len(all_close)}, all_pred_close={len(all_pred_close)}")
-            continue
-
-        plot_data = pd.DataFrame({
-            'Date': all_dates,
-            'Close': all_close,
-            'Predicted_Close': all_pred_close
-        })
-        plot_data['Date'] = pd.to_datetime(plot_data['Date'], utc=True)
-
-        fig.add_trace(go.Scatter(
-            x=plot_data['Date'],
-            y=plot_data['Close'],
-            mode='lines',
-            name=f'{ticker} (Historia)',
-            line=dict(color=colors[color_idx]),
-            legendgroup=ticker
-        ))
-        fig.add_trace(go.Scatter(
-            x=plot_data['Date'],
-            y=plot_data['Predicted_Close'],
-            mode='lines',
-            name=f'{ticker} (Predykcja)',
-            line=dict(color=colors[color_idx], dash='dash'),
-            legendgroup=ticker
-        ))
-
-        split_date = pd.Timestamp(pred_dates[0]).isoformat()
-        fig.add_shape(
-            type="line",
-            x0=split_date,
-            x1=split_date,
-            y0=0,
-            y1=1,
-            xref="x",
-            yref="paper",
-            line=dict(color="red", width=2, dash="dash")
-        )
-        fig.add_annotation(
-            x=split_date,
-            y=1.05,
-            xref="x",
-            yref="paper",
-            text="Początek predykcji",
-            showarrow=False,
-            font=dict(size=12),
-            align="center"
-        )
-
-    fig.update_layout(
-        title="Porównanie predykcji z historią dla wybranych spółek",
-        xaxis_title="Data",
-        yaxis_title="Cena zamknięcia",
-        showlegend=True,
-        xaxis=dict(rangeslider=dict(visible=True), type='date'),
-        legend=dict(
-            itemclick="toggle",
-            itemdoubleclick="toggleothers"
-        )
-    )
-
-    st.plotly_chart(fig, use_container_width=True)
-
-    # Display metrics
-    st.subheader("Metryki predykcji dla każdej spółki")
-    metrics_df = pd.DataFrame({
-        ticker: data['metrics'] for ticker, data in all_results.items()
-    }).T.reset_index().rename(columns={'index': 'Ticker'})
-    st.dataframe(metrics_df.style.format({
-        'Accuracy': '{:.2f}%',
-        'MAPE': '{:.2f}%',
-        'MAE': '{:.2f}',
-        'Directional_Accuracy': '{:.2f}%'
-    }))
-
-    return all_results 
+    return all_results
 
 def save_benchmark_to_csv(benchmark_date, all_results):
     """Saves benchmark results to CSV with history, including all metrics."""
