@@ -5,8 +5,42 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+def create_base_plot(title, xaxis_title="Data", yaxis_title="Cena zamknięcia", split_date=None):
+    """Creates a base Plotly figure with common settings."""
+    fig = go.Figure()
+    fig.update_layout(
+        title=title,
+        xaxis_title=xaxis_title,
+        yaxis_title=yaxis_title,
+        showlegend=True,
+        xaxis=dict(rangeslider=dict(visible=True), type='date'),
+        legend=dict(itemclick="toggle", itemdoubleclick="toggleothers")
+    )
+    if split_date:
+        fig.add_shape(
+            type="line",
+            x0=split_date,
+            x1=split_date,
+            y0=0,
+            y1=1,
+            xref="x",
+            yref="paper",
+            line=dict(color="red", width=2, dash="dash")
+        )
+        fig.add_annotation(
+            x=split_date,
+            y=1.05,
+            xref="x",
+            yref="paper",
+            text="Początek predykcji",
+            showarrow=False,
+            font=dict(size=12),
+            align="center"
+        )
+    return fig
+
 def create_plot(config, ticker_data, original_close, median, lower_bound, upper_bound, ticker):
-    """Tworzy wykres cen i predykcji."""
+    """Creates a plot of stock prices and predictions."""
     last_date = ticker_data['Date'].iloc[-1].to_pydatetime()
     pred_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=config['model']['max_prediction_length'], freq='D')
     historical_dates = ticker_data['Date'].tolist()
@@ -25,7 +59,7 @@ def create_plot(config, ticker_data, original_close, median, lower_bound, upper_
 
     plot_data['Date'] = pd.to_datetime(plot_data['Date'], utc=True)
     
-    fig = go.Figure()
+    fig = create_base_plot(f"Ceny akcji dla {ticker}", split_date=pd.Timestamp(last_date).isoformat())
     fig.add_trace(go.Scatter(
         x=plot_data['Date'],
         y=plot_data['Close'],
@@ -50,40 +84,6 @@ def create_plot(config, ticker_data, original_close, median, lower_bound, upper_
         fillcolor='rgba(0, 0, 255, 0.1)'
     ))
 
-    split_date = pd.Timestamp(last_date).isoformat()
-    fig.add_shape(
-        type="line",
-        x0=split_date,
-        x1=split_date,
-        y0=0,
-        y1=1,
-        xref="x",
-        yref="paper",
-        line=dict(color="red", width=2, dash="dash")
-    )
-    fig.add_annotation(
-        x=split_date,
-        y=1.05,
-        xref="x",
-        yref="paper",
-        text="Początek predykcji",
-        showarrow=False,
-        font=dict(size=12),
-        align="center"
-    )
-
-    fig.update_layout(
-        title=f"Ceny akcji dla {ticker}",
-        xaxis_title="Data",
-        yaxis_title="Cena zamknięcia",
-        showlegend=True,
-        xaxis=dict(rangeslider=dict(visible=True), type='date'),
-        legend=dict(
-            itemclick="toggle",
-            itemdoubleclick="toggleothers"
-        )
-    )
-
     st.plotly_chart(fig, use_container_width=True)
     
     pred_df = pd.DataFrame({
@@ -101,7 +101,7 @@ def create_plot(config, ticker_data, original_close, median, lower_bound, upper_
     }))
 
 def create_historical_plot(config, ticker_data, original_close, median, lower_bound, upper_bound, ticker, historical_close):
-    """Tworzy wykres porównujący predykcje z historią."""
+    """Creates a plot comparing predictions with historical data."""
     last_date = ticker_data['Date'].iloc[-1].to_pydatetime()
     pred_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=config['model']['max_prediction_length'], freq='D')
     historical_dates = ticker_data['Date'].tolist()
@@ -133,7 +133,7 @@ def create_historical_plot(config, ticker_data, original_close, median, lower_bo
 
     plot_data['Date'] = pd.to_datetime(plot_data['Date'], utc=True)
     
-    fig = go.Figure()
+    fig = create_base_plot(f"Porównanie predykcji z historią dla {ticker}", split_date=pd.Timestamp(last_date).isoformat())
     fig.add_trace(go.Scatter(
         x=plot_data['Date'],
         y=plot_data['Close'],
@@ -148,39 +148,5 @@ def create_historical_plot(config, ticker_data, original_close, median, lower_bo
         name='Przewidywana cena zamknięcia',
         line=dict(color='#FFA500', dash='dash')
     ))
-
-    split_date = pd.Timestamp(last_date).isoformat()
-    fig.add_shape(
-        type="line",
-        x0=split_date,
-        x1=split_date,
-        y0=0,
-        y1=1,
-        xref="x",
-        yref="paper",
-        line=dict(color="red", width=2, dash="dash")
-    )
-    fig.add_annotation(
-        x=split_date,
-        y=1.05,
-        xref="x",
-        yref="paper",
-        text="Początek predykcji",
-        showarrow=False,
-        font=dict(size=12),
-        align="center"
-    )
-
-    fig.update_layout(
-        title=f"Porównanie predykcji z historią dla {ticker}",
-        xaxis_title="Data",
-        yaxis_title="Cena zamknięcia",
-        showlegend=True,
-        xaxis=dict(rangeslider=dict(visible=True), type='date'),
-        legend=dict(
-            itemclick="toggle",
-            itemdoubleclick="toggleothers"
-        )
-    )
 
     st.plotly_chart(fig, use_container_width=True)

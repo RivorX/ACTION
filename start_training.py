@@ -1,5 +1,6 @@
 import os
 import yaml
+import asyncio
 from scripts.data_fetcher import DataFetcher
 from scripts.preprocessor import DataPreprocessor
 from scripts.train import train_model
@@ -15,7 +16,7 @@ def create_directories():
         if not os.path.exists(directory):
             os.makedirs(directory)
 
-def start_training(regions: str = 'global', years: int = 3, use_optuna: bool = False, continue_training: bool = True):
+async def start_training(regions: str = 'global', years: int = 3, use_optuna: bool = False, continue_training: bool = True):
     try:
         create_directories()
 
@@ -60,8 +61,8 @@ def start_training(regions: str = 'global', years: int = 3, use_optuna: bool = F
         # Aktualizacja konfiguracji z wybranymi tickerami
         config['data']['tickers'] = all_tickers
 
-        # Pobierz dane
-        df = fetcher.fetch_global_stocks(region=None)  # region=None, bo tickery są już wybrane
+        # Pobierz dane asynchronicznie
+        df = await fetcher.fetch_global_stocks(region=None)  # region=None, bo tickery są już wybrane
         if df.empty:
             raise ValueError("Nie udało się pobrać danych giełdowych.")
 
@@ -99,4 +100,5 @@ if __name__ == "__main__":
     continue_training_input = input("Kontynuować trening z checkpointu? (tak/nie) [domyślnie: tak]: ").lower() or 'tak'
     continue_training = continue_training_input != 'nie'
 
-    start_training(regions, years, use_optuna, continue_training)
+    # Uruchom asynchroniczną funkcję start_training
+    asyncio.run(start_training(regions, years, use_optuna, continue_training))

@@ -21,11 +21,16 @@ ALL_SECTORS = [
 ]
 
 class DataFetcher:
-    def __init__(self, config: ConfigManager):
-        self.config = config
-        self.tickers_file = Path(config.get('data.tickers_file', 'config/training_tickers.yaml'))
-        self.years = config.get('data.years', 3)
-        self.raw_data_path = Path(config.get('data.raw_data_path', 'data/stock_data.csv'))
+    def __init__(self, config_manager: ConfigManager):
+        self.config = config_manager.config  # Używamy atrybutu .config
+        # Pobierz ścieżki bezpośrednio z config, bez domyślnych wartości
+        try:
+            self.tickers_file = Path(self.config['data']['tickers_file'])
+            self.years = self.config['data']['years']
+            self.raw_data_path = Path(self.config['data']['raw_data_path'])
+        except KeyError as e:
+            logger.error(f"Missing key in config: {e}")
+            raise ValueError(f"Configuration error: missing key {e} in config.yaml")
         self.extra_days = 50  # Bufor na dodatkowe dni
         self.executor = ThreadPoolExecutor(max_workers=10)  # Thread pool for yfinance calls
 
@@ -144,6 +149,15 @@ class DataFetcher:
         else:
             logger.error("Nie udało się pobrać żadnych danych giełdowych.")
         return df
+
+    async def _fetch_stock_data_sync_helper(self, ticker: str, start_date: datetime, end_date: datetime) -> pd.DataFrame:
+        async with aiohttp.ClientSession() as session:
+            return await self.fetch_stock_data(ticker, start_date, end_date, session)
+
+    def fetch_stock_data_sync(self, ticker: str, start_date: datetime, end_date: datetime) -> pd.DataFrame:
+        """Synchronous wrapper for fetching stock data."""
+        loop = asyncio.get_event_loop()
+        return loop.run_until_complete(self._fetch_stock_data_sync_helper(ticker, start_date, end_date))
 
     def __del__(self):
         # Clean up the thread pool executor

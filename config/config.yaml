@@ -6,6 +6,7 @@ data:
   normalizers_path: data/normalizers.pkl
   tickers_file: config/training_tickers.yaml
   company_names_file: config/company_names.yaml
+  benchmark_tickers_file: config/benchmark_tickers.yaml
 
 # Model settings
 model:

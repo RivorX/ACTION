@@ -14,23 +14,23 @@ import torch
 logger = logging.getLogger(__name__)
 
 async def fetch_ticker_data(ticker, start_date, end_date):
-    """Asynchronicznie pobiera dane dla pojedynczego tickera."""
+    """Asynchronously fetches data for a single ticker."""
     try:
         fetcher = DataFetcher(ConfigManager())
-        data = await fetcher.fetch_stock_data(ticker, start_date, end_date, None)
+        data = fetcher.fetch_stock_data_sync(ticker, start_date, end_date)
         if data.empty:
-            logger.error(f"Brak danych dla {ticker}")
+            logger.error(f"No data for {ticker}")
             return ticker, None
         return ticker, data
     except Exception as e:
-        logger.error(f"Błąd pobierania danych dla {ticker}: {e}")
+        logger.error(f"Error fetching data for {ticker}: {e}")
         return ticker, None
 
 async def process_ticker(ticker, full_data, config, temp_raw_data_path, max_prediction_length, trim_date, dataset, normalizers, model):
-    """Asynchronicznie przetwarza dane dla pojedynczego tickera z wczytanym modelem."""
+    """Asynchronously processes data for a single ticker with loaded model."""
     try:
         if full_data is None:
-            logger.error(f"Brak danych dla {ticker}")
+            logger.error(f"No data for {ticker}")
             return ticker, None
 
         full_data = full_data[full_data['Ticker'] == ticker].copy()
@@ -38,59 +38,59 @@ async def process_ticker(ticker, full_data, config, temp_raw_data_path, max_pred
         full_data.set_index('Date', inplace=True)
         historical_close = full_data['Close']
 
-        # Przytnij dane do trim_date dla modelu
+        # Trim data to trim_date for model
         new_data = full_data[full_data.index <= trim_date].copy()
         if new_data.empty:
-            logger.error(f"Brak danych przed {trim_date} dla {ticker}")
+            logger.error(f"No data before {trim_date} for {ticker}")
             return ticker, None
 
         new_data.reset_index().to_csv(temp_raw_data_path, index=False)
-        logger.info(f"Dane dla {ticker} zapisane do {temp_raw_data_path}")
+        logger.info(f"Data for {ticker} saved to {temp_raw_data_path}")
 
-        # Preprocess danych
+        # Preprocess data
         ticker_data, original_close = preprocess_data(config, new_data.reset_index(), ticker, normalizers, historical_mode=True)
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         with torch.no_grad():
             median, _, _ = generate_predictions(config, dataset, model, ticker_data)
 
-        # Przygotuj daty i dane
+        # Prepare dates and data
         last_date = ticker_data['Date'].iloc[-1].to_pydatetime()
         pred_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=max_prediction_length, freq='D')
 
-        # Przytnij dane historyczne do okresu przed predykcją
+        # Trim historical data to pre-prediction period
         historical_dates = ticker_data['Date'].tolist()
         historical_close_trimmed = original_close.tolist()
         if len(historical_dates) != len(historical_close_trimmed):
-            logger.error(f"Niezgodność długości historical_dates ({len(historical_dates)}) i historical_close_trimmed ({len(historical_close_trimmed)}) dla {ticker}")
+            logger.error(f"Length mismatch: historical_dates ({len(historical_dates)}) and historical_close_trimmed ({len(historical_close_trimmed)}) for {ticker}")
             return ticker, None
 
-        # Pobierz dane dla okresu predykcji
+        # Fetch data for prediction period
         historical_pred_close = historical_close.loc[trim_date:]
         if historical_pred_close.empty:
-            logger.error(f"Brak danych historycznych po {trim_date} dla {ticker}")
+            logger.error(f"No historical data after {trim_date} for {ticker}")
             return ticker, None
         historical_pred_close = historical_pred_close.reindex(pd.to_datetime(pred_dates), method='ffill')
         if historical_pred_close.isna().any():
-            logger.warning(f"Znaleziono NaN w historical_pred_close dla {ticker}. Wypełniam metodą ffill i bfill.")
+            logger.warning(f"NaN found in historical_pred_close for {ticker}. Filling with ffill and bfill.")
             historical_pred_close = historical_pred_close.ffill().bfill()
         if historical_pred_close.isna().any():
-            logger.error(f"Po wypełnieniu nadal istnieją NaN w historical_pred_close dla {ticker}")
+            logger.error(f"NaN persists in historical_pred_close for {ticker}")
             return ticker, None
         historical_pred_close = historical_pred_close.tolist()
 
-        # Oblicz metryki
+        # Calculate metrics
         if len(median) == len(historical_pred_close):
             median = np.array(median)
             historical_pred_close_array = np.array(historical_pred_close)
 
-            # Unikaj zer w denominators
+            # Avoid zero denominators
             historical_pred_close_array = np.where(historical_pred_close_array == 0, 1e-6, historical_pred_close_array)
 
             # Accuracy (100 - MAPE)
             differences = np.abs(median - historical_pred_close_array)
             relative_diff = (differences / historical_pred_close_array) * 100
             if np.any(np.isnan(relative_diff)):
-                logger.warning(f"NaN w relative_diff dla {ticker}. Pomijam wartości NaN w obliczaniu średniej.")
+                logger.warning(f"NaN in relative_diff for {ticker}. Skipping NaN values in mean calculation.")
                 relative_diff = relative_diff[~np.isnan(relative_diff)]
             accuracy = 100 - np.mean(relative_diff) if len(relative_diff) > 0 else 0.0
 
@@ -105,9 +105,9 @@ async def process_ticker(ticker, full_data, config, temp_raw_data_path, max_pred
             actual_changes = np.sign(np.diff(historical_pred_close_array))
             directional_accuracy = np.mean(pred_changes == actual_changes) * 100 if len(pred_changes) > 0 else 0.0
 
-            logger.info(f"Metryki dla {ticker}: Accuracy={accuracy:.2f}%, MAPE={mape:.2f}%, MAE={mae:.2f}, Directional Accuracy={directional_accuracy:.2f}%")
+            logger.info(f"Metrics for {ticker}: Accuracy={accuracy:.2f}%, MAPE={mape:.2f}%, MAE={mae:.2f}, Directional Accuracy={directional_accuracy:.2f}%")
         else:
-            logger.error(f"Niezgodna długość predykcji i danych historycznych dla {ticker}: median={len(median)}, historical_pred_close={len(historical_pred_close)}")
+            logger.error(f"Mismatched prediction and historical data lengths for {ticker}: median={len(median)}, historical_pred_close={len(historical_pred_close)}")
             return ticker, None
 
         return ticker, {
@@ -125,15 +125,16 @@ async def process_ticker(ticker, full_data, config, temp_raw_data_path, max_pred
         }
 
     except Exception as e:
-        logger.error(f"Błąd podczas przetwarzania {ticker}: {e}")
+        logger.error(f"Error processing {ticker}: {e}")
         return ticker, None
     finally:
+        # Clean up ticker-specific resources
         if os.path.exists(temp_raw_data_path):
             os.remove(temp_raw_data_path)
-            logger.info(f"Tymczasowy plik {temp_raw_data_path} usunięty.")
+            logger.info(f"Temporary file {temp_raw_data_path} removed.")
 
 async def create_benchmark_plot(config, benchmark_tickers, historical_close_dict):
-    """Tworzy wykres benchmarku i oblicza metryki dla wielu tickerów asynchronicznie."""
+    """Creates benchmark plot and calculates metrics for multiple tickers asynchronously."""
     all_results = {}
     accuracy_scores = {}
     temp_raw_data_path = 'data/temp_benchmark_data.csv'
@@ -141,20 +142,22 @@ async def create_benchmark_plot(config, benchmark_tickers, historical_close_dict
     trim_date = pd.Timestamp(datetime.now(), tz='UTC') - pd.Timedelta(days=max_prediction_length)
     start_date = trim_date - pd.Timedelta(days=720)
 
-    # Pobierz dane dla wszystkich tickerów
-    logger.info("Pobieranie danych dla wszystkich tickerów...")
+    # Fetch data for all tickers
+    logger.info("Fetching data for all tickers...")
     tasks = [fetch_ticker_data(ticker, start_date, datetime.now()) for ticker in benchmark_tickers]
-    ticker_data_results = await asyncio.gather(*tasks, return_exceptions=True)
+    ticker_data_results = await asyncio.gather(*tasks)
     ticker_data_dict = {ticker: data for ticker, data in ticker_data_results if data is not None}
 
     if not ticker_data_dict:
-        logger.error("Nie udało się pobierać danych dla żadnego tickera.")
+        logger.error("Failed to fetch data for any ticker.")
         return accuracy_scores
 
-    # Wczytaj model raz
-    logger.info("Wczytywanie modelu i danych...")
+    # Load model once
+    logger.info("Loading model and data...")
+    model = None
+    dataset = None
+    normalizers = None
     try:
-        # Wczytaj model dla pierwszego tickera
         first_ticker = next(iter(ticker_data_dict))
         first_data = ticker_data_dict[first_ticker]
         first_data.reset_index().to_csv(temp_raw_data_path, index=False)
@@ -162,36 +165,35 @@ async def create_benchmark_plot(config, benchmark_tickers, historical_close_dict
         if os.path.exists(temp_raw_data_path):
             os.remove(temp_raw_data_path)
     except Exception as e:
-        logger.error(f"Błąd wczytywania modelu: {e}")
+        logger.error(f"Error loading model: {e}")
         return accuracy_scores
-
-    try:
-        # Asynchroniczne przetwarzanie tickerów
-        tasks = [
-            process_ticker(ticker, data, config, temp_raw_data_path, max_prediction_length, trim_date, dataset, normalizers, model)
-            for ticker, data in ticker_data_dict.items()
-        ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        for ticker, result in results:
-            if result is not None and isinstance(result, dict):
-                all_results[ticker] = result
-                accuracy_scores[ticker] = result['metrics']['Accuracy']
-            else:
-                logger.warning(f"Pominięto ticker {ticker} z powodu niepoprawnych danych wyników.")
-                accuracy_scores[ticker] = 0.0
-
     finally:
-        # Zwolnij zasoby modelu
-        logger.info("Zwalnianie zasobów modelu...")
-        del model
-        del dataset
-        del normalizers
+        if model is not None:
+            del model
+        if dataset is not None:
+            del dataset
+        if normalizers is not None:
+            del normalizers
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        logger.info("Zasoby modelu zwolnione.")
+            logger.info(f"GPU memory after cleanup: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
 
-    # Tworzenie wykresu (pozostaje bez zmian)
+    # Process tickers asynchronously
+    tasks = [
+        process_ticker(ticker, data, config, temp_raw_data_path, max_prediction_length, trim_date, dataset, normalizers, model)
+        for ticker, data in ticker_data_dict.items()
+    ]
+    results = await asyncio.gather(*tasks)
+
+    for ticker, result in results:
+        if result is not None and isinstance(result, dict):
+            all_results[ticker] = result
+            accuracy_scores[ticker] = result['metrics']['Accuracy']
+        else:
+            logger.warning(f"Skipped ticker {ticker} due to invalid result data.")
+            accuracy_scores[ticker] = 0.0
+
+    # Create plot
     fig = go.Figure()
     colors = ['#0000FF', '#00FF00', '#FF0000', '#800080', '#FFA500', '#00FFFF', '#FF00FF', '#FFFF00', '#A52A2A', '#808080']
 
@@ -208,7 +210,7 @@ async def create_benchmark_plot(config, benchmark_tickers, historical_close_dict
         all_pred_close = [None] * len(historical_dates) + predictions
 
         if len(all_dates) != len(all_close) or len(all_dates) != len(all_pred_close):
-            logger.error(f"Niezgodność długości dla {ticker}: all_dates={len(all_dates)}, all_close={len(all_close)}, all_pred_close={len(all_pred_close)}")
+            logger.error(f"Length mismatch for {ticker}: all_dates={len(all_dates)}, all_close={len(all_close)}, all_pred_close={len(all_pred_close)}")
             continue
 
         plot_data = pd.DataFrame({
@@ -271,24 +273,23 @@ async def create_benchmark_plot(config, benchmark_tickers, historical_close_dict
 
     st.plotly_chart(fig, use_container_width=True)
 
-    # Wyświetlanie metryk
+    # Display metrics
     st.subheader("Metryki predykcji dla każdej spółki")
     metrics_df = pd.DataFrame({
         ticker: data['metrics'] for ticker, data in all_results.items()
     }).T.reset_index().rename(columns={'index': 'Ticker'})
     st.dataframe(metrics_df.style.format({
-        'accuracy': '{:.2f}%',
-        'mape': '{:.2f}%',
-        'mae': '{:.2f}',
-        'directional_accuracy': '{:.2f}%'
+        'Accuracy': '{:.2f}%',
+        'MAPE': '{:.2f}%',
+        'MAE': '{:.2f}',
+        'Directional_Accuracy': '{:.2f}%'
     }))
 
     return all_results 
 
 def save_benchmark_to_csv(benchmark_date, all_results):
-    """Zapisuje wyniki benchmarku do pliku CSV z historią, uwzględniając wszystkie metryki."""
+    """Saves benchmark results to CSV with history, including all metrics."""
     csv_file = 'data/benchmarks_history.csv'
-    # Przygotuj kolumny dla wszystkich metryk
     metrics = ['Accuracy', 'MAPE', 'MAE', 'Directional_Accuracy']
     columns = ['Date']
     for ticker in all_results.keys():
@@ -296,7 +297,6 @@ def save_benchmark_to_csv(benchmark_date, all_results):
             columns.append(f"{ticker}_{metric}")
     columns.extend(['Average_' + metric for metric in metrics])
     
-    # Przygotuj dane
     metrics_data = {'Date': [benchmark_date]}
     valid_metrics = {}
     
@@ -307,11 +307,10 @@ def save_benchmark_to_csv(benchmark_date, all_results):
                 value = data['metrics'].get(metric, 0.0)
                 metrics_data[f"{ticker}_{metric}"] = [value]
         else:
-            logger.warning(f"Brak poprawnych danych metryk dla {ticker}, ustawiam wartości domyślne.")
+            logger.warning(f"No valid metrics data for {ticker}, setting default values.")
             for metric in metrics:
                 metrics_data[f"{ticker}_{metric}"] = [0.0]
     
-    # Oblicz średnie dla każdej metryki
     if valid_metrics:
         for metric in metrics:
             values = [m.get(metric, 0.0) for m in valid_metrics.values() if m.get(metric, 0.0) != 0.0]
@@ -329,10 +328,10 @@ def save_benchmark_to_csv(benchmark_date, all_results):
         updated_df = new_data
     
     updated_df.to_csv(csv_file, index=False)
-    logger.info(f"Wyniki benchmarku zapisane do {csv_file}")
+    logger.info(f"Benchmark results saved to {csv_file}")
 
 def load_benchmark_history(benchmark_tickers):
-    """Wczytuje historię benchmarków z pliku CSV."""
+    """Loads benchmark history from CSV."""
     csv_file = 'data/benchmarks_history.csv'
     columns = ['Date']
     for ticker in benchmark_tickers:

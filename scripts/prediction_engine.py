@@ -60,8 +60,6 @@ async def load_data_and_model_async(config, ticker, temp_raw_data_path, historic
     # Pobierz parametry normalizera dla Relative_Returns
     relative_returns_normalizer_params = normalizers.get('Relative_Returns', None)
     target_normalizer_params = dataset.target_normalizer.get_parameters()
-    logger.info(f"Parametry normalizera dla Relative_Returns (normalizers.pkl): {relative_returns_normalizer_params.get_parameters() if relative_returns_normalizer_params else 'Brak'}")
-    logger.info(f"Parametry normalizera dla target (dataset.target_normalizer): {target_normalizer_params}")
 
     # Sprawdź zgodność normalizerów tylko jeśli relative_returns_normalizer_params istnieje
     if relative_returns_normalizer_params is not None:
