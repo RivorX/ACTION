@@ -36,9 +36,8 @@ training:
 
 # Ustawienia predykcji
 prediction:
-  historical_days: 730          # Liczba dni historycznych do pobierania danych
+  years: 3                      # Liczba lat historycznych do pobierania danych
   batch_size: 128               # Rozmiar partii dla predykcji
-  benchmark_historical_days: 720 # Liczba dni historycznych dla benchmarku
 
 # Ustawienia danych
 data:

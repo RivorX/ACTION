@@ -55,13 +55,12 @@ def clean_temp_dir(temp_dir):
 
 class StockPredictor:
     """Handles business logic for stock price prediction."""
-    def __init__(self, config):
+    def __init__(self, config, years):
         self.config = config
-        self.fetcher = DataFetcher(ConfigManager())
-        # Create temporary directory in project
+        self.years = years
+        self.fetcher = DataFetcher(ConfigManager(), years)
         self.temp_dir = os.path.join(project_root, 'data', 'temp')
         os.makedirs(self.temp_dir, exist_ok=True)
-        # Clean temp directory at startup
         clean_temp_dir(self.temp_dir)
 
     def fetch_stock_data(self, ticker, start_date, end_date):
@@ -74,8 +73,7 @@ class StockPredictor:
         try:
             temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.csv', dir=self.temp_dir)
             temp_raw_data_path = temp_file.name
-            temp_file.close()  # Explicitly close the file
-            # Fetch data
+            temp_file.close()
             new_data = self.fetch_stock_data(ticker, start_date, end_date)
             if new_data.empty:
                 raise ValueError(f"No data available for {ticker}")
@@ -83,7 +81,6 @@ class StockPredictor:
             new_data.to_csv(temp_raw_data_path, index=False)
             logger.info(f"Data for {ticker} saved to {temp_raw_data_path}")
 
-            # Load model and preprocess data
             _, dataset, normalizers, model = load_data_and_model(self.config, ticker, temp_raw_data_path)
             ticker_data, original_close = preprocess_data(self.config, new_data, ticker, normalizers)
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -96,14 +93,14 @@ class StockPredictor:
             raise
         finally:
             if temp_file is not None and os.path.exists(temp_raw_data_path):
-                for _ in range(3):  # Try up to 3 times to handle file locking
+                for _ in range(3):
                     try:
                         os.remove(temp_raw_data_path)
                         logger.info(f"Temporary file {temp_raw_data_path} removed.")
                         break
                     except PermissionError as e:
                         logger.warning(f"Failed to remove temporary file {temp_raw_data_path}: {e}. Retrying...")
-                        time.sleep(0.1)  # Short delay to allow file release
+                        time.sleep(0.1)
                     except Exception as e:
                         logger.error(f"Unexpected error while removing {temp_raw_data_path}: {e}")
                         break
@@ -114,8 +111,7 @@ class StockPredictor:
         try:
             temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.csv', dir=self.temp_dir)
             temp_raw_data_path = temp_file.name
-            temp_file.close()  # Explicitly close the file
-            # Fetch full data
+            temp_file.close()
             full_data = self.fetch_stock_data(ticker, start_date, end_date)
             if full_data.empty:
                 raise ValueError(f"No data available for {ticker}")
@@ -129,7 +125,6 @@ class StockPredictor:
             new_data.to_csv(temp_raw_data_path, index=False)
             logger.info(f"Data for {ticker} saved to {temp_raw_data_path}")
             
-            # Load model and preprocess data
             _, dataset, normalizers, model = load_data_and_model(self.config, ticker, temp_raw_data_path, historical_mode=True)
             ticker_data, original_close = preprocess_data(self.config, new_data, ticker, normalizers, historical_mode=True)
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -144,14 +139,14 @@ class StockPredictor:
             raise
         finally:
             if temp_file is not None and os.path.exists(temp_raw_data_path):
-                for _ in range(3):  # Try up to 3 times to handle file locking
+                for _ in range(3):
                     try:
                         os.remove(temp_raw_data_path)
                         logger.info(f"Temporary file {temp_raw_data_path} removed.")
                         break
                     except PermissionError as e:
                         logger.warning(f"Failed to remove temporary file {temp_raw_data_path}: {e}. Retrying...")
-                        time.sleep(0.1)  # Short delay to allow file release
+                        time.sleep(0.1)
                     except Exception as e:
                         logger.error(f"Unexpected error while removing {temp_raw_data_path}: {e}")
                         break
@@ -161,8 +156,11 @@ def main():
     st.set_page_config(page_title="Stock Price Predictor", layout="wide")
     st.title("Stock Price Predictor")
 
-    config = load_config()
-    predictor = StockPredictor(config)
+    config_manager = ConfigManager()  # Singleton
+    config = config_manager.config
+    years = config['prediction']['years']
+
+    predictor = StockPredictor(config, years)
     benchmark_tickers = load_benchmark_tickers(config)
 
     page = st.sidebar.selectbox("Wybierz stronę", ["Predykcje przyszłości", "Porównanie predykcji z historią", "Benchmark"])
@@ -186,7 +184,7 @@ def main():
         if st.button("Generuj predykcje"):
             with st.spinner('Trwa generowanie predykcji...'):
                 try:
-                    start_date = pd.Timestamp(datetime.now(), tz='UTC') - pd.Timedelta(days=config['prediction']['historical_days'])
+                    start_date = pd.Timestamp(datetime.now(), tz='UTC') - pd.Timedelta(days=years * 365)
                     ticker_data, original_close, median, lower_bound, upper_bound = predictor.predict(
                         ticker_input, start_date, datetime.now()
                     )
@@ -215,7 +213,7 @@ def main():
                 try:
                     max_prediction_length = config['model']['max_prediction_length']
                     trim_date = pd.Timestamp(datetime.now(), tz='UTC') - pd.Timedelta(days=max_prediction_length)
-                    start_date = trim_date - pd.Timedelta(days=config['prediction']['historical_days'])
+                    start_date = trim_date - pd.Timedelta(days=years * 365)
                     
                     ticker_data, original_close, median, lower_bound, upper_bound, historical_close = predictor.predict_historical(
                         ticker_input, start_date, datetime.now(), trim_date
@@ -230,7 +228,7 @@ def main():
         if st.button("Generuj benchmark"):
             with st.spinner('Trwa generowanie benchmarku...'):
                 try:
-                    all_results = asyncio.run(create_benchmark_plot(config, benchmark_tickers, {}))
+                    all_results = asyncio.run(create_benchmark_plot(config, benchmark_tickers, {}, years))
                     benchmark_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                     save_benchmark_to_csv(benchmark_date, all_results, config['model_name'])
                 except Exception as e:

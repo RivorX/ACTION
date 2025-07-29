@@ -26,15 +26,14 @@ ALL_SECTORS = [
     'Real Estate', 'Unknown'
 ]
 
-async def load_data_and_model_async(config, ticker, temp_raw_data_path, historical_mode=False, trim_days=0):
+async def load_data_and_model_async(config, ticker, temp_raw_data_path, historical_mode=False, trim_days=0, years=3):
     """Asynchroniczna wersja load_data_and_model."""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logger.info(f"Używane urządzenie: {device}")
 
-    # Asynchroniczne pobieranie danych
     async with aiohttp.ClientSession() as session:
-        fetcher = DataFetcher(ConfigManager())
-        start_date = pd.Timestamp(datetime.now(), tz='UTC') - pd.Timedelta(days=config['prediction']['historical_days'] + trim_days)
+        fetcher = DataFetcher(ConfigManager(), years)
+        start_date = pd.Timestamp(datetime.now(), tz='UTC') - pd.Timedelta(days=years * 365 + trim_days)
         new_data = await fetcher.fetch_stock_data(ticker, start_date, datetime.now(), session)
         if new_data.empty:
             logger.error(f"Nie udało się pobrać danych dla {ticker}")
@@ -58,11 +57,9 @@ async def load_data_and_model_async(config, ticker, temp_raw_data_path, historic
         logger.error(f"Błąd wczytywania normalizerów: {e}")
         raise
 
-    # Pobierz parametry normalizera dla Relative_Returns
     relative_returns_normalizer_params = normalizers.get('Relative_Returns', None)
     target_normalizer_params = dataset.target_normalizer.get_parameters()
 
-    # Sprawdź zgodność normalizerów tylko jeśli relative_returns_normalizer_params istnieje
     if relative_returns_normalizer_params is not None:
         try:
             relative_returns_params_tensor = relative_returns_normalizer_params.get_parameters()
@@ -76,7 +73,6 @@ async def load_data_and_model_async(config, ticker, temp_raw_data_path, historic
         logger.warning("Brak normalizera dla Relative_Returns w normalizers.pkl, pomijam porównanie.")
 
     try:
-        # Tworzenie ścieżki do modelu na podstawie model_name i models_dir
         model_name = config['model_name']
         model_path = os.path.join(config['paths']['models_dir'], f"{model_name}_checkpoint.pth")
         if not os.path.exists(model_path):
@@ -98,10 +94,10 @@ async def load_data_and_model_async(config, ticker, temp_raw_data_path, historic
 
     return new_data, dataset, normalizers, model
 
-def load_data_and_model(config, ticker, temp_raw_data_path, historical_mode=False, trim_days=0):
+def load_data_and_model(config, ticker, temp_raw_data_path, historical_mode=False, trim_days=0, years=3):
     """Synchroniczna wersja wywołująca asynchroniczną."""
     return asyncio.get_event_loop().run_until_complete(
-        load_data_and_model_async(config, ticker, temp_raw_data_path, historical_mode, trim_days)
+        load_data_and_model_async(config, ticker, temp_raw_data_path, historical_mode, trim_days, years)
     )
 
 def preprocess_data(config, ticker_data, ticker, normalizers, historical_mode=False, trim_days=0):

@@ -7,16 +7,16 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 class ConfigManager:
-    """Klasa do zarządzania konfiguracją z pliku YAML."""
+    """Klasa do zarządzania konfiguracją z pliku YAML z wzorcem Singleton."""
     
-    def __init__(self, config_path: str = "config/config.yaml"):
-        """Inicjalizuje menedżera konfiguracji.
-        
-        Args:
-            config_path (str): Ścieżka do pliku konfiguracyjnego.
-        """
-        self.config_path = Path(config_path)
-        self.config = self._load_config()
+    _instance = None
+
+    def __new__(cls, config_path: str = "config/config.yaml"):
+        if cls._instance is None:
+            cls._instance = super(ConfigManager, cls).__new__(cls)
+            cls._instance.config_path = Path(config_path)
+            cls._instance.config = cls._instance._load_config()
+        return cls._instance
 
     def _load_config(self) -> dict:
         """Wczytuje konfigurację z pliku YAML.

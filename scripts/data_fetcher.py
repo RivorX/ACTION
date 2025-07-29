@@ -21,7 +21,7 @@ ALL_SECTORS = [
 ]
 
 class DataFetcher:
-    def __init__(self, config_manager: ConfigManager, years: int = 3):
+    def __init__(self, config_manager: ConfigManager, years: int):
         """
         Inicjalizuje DataFetcher z config_managerem i liczbą lat danych do pobrania.
 
@@ -29,9 +29,8 @@ class DataFetcher:
             config_manager (ConfigManager): Obiekt ConfigManager z konfiguracją.
             years (int): Liczba lat danych historycznych do pobrania.
         """
-        self.config = config_manager.config  # Używamy atrybutu .config
+        self.config = config_manager.config
         self.years = years
-        # Pobierz ścieżki bezpośrednio z config, bez domyślnych wartości
         try:
             self.tickers_file = Path(self.config['data']['tickers_file'])
             self.raw_data_path = Path(self.config['data']['raw_data_path'])
@@ -39,7 +38,7 @@ class DataFetcher:
             logger.error(f"Missing key in config: {e}")
             raise ValueError(f"Configuration error: missing key {e} in config.yaml")
         self.extra_days = 50  # Bufor na dodatkowe dni
-        self.executor = ThreadPoolExecutor(max_workers=10)  # Thread pool for yfinance calls
+        self.executor = ThreadPoolExecutor(max_workers=10)
         logger.info(f"Inicjalizacja DataFetcher z {self.years} latami danych.")
 
     def _load_tickers(self, region: str = None) -> list:

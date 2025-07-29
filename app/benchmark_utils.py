@@ -150,13 +150,13 @@ async def process_ticker(ticker, full_data, config, temp_raw_data_path, max_pred
         logger.error(f"Error processing {ticker}: {e}")
         return ticker, None
 
-async def create_benchmark_plot(config, benchmark_tickers, historical_close_dict):
+async def create_benchmark_plot(config, benchmark_tickers, historical_close_dict, years):
     """Tworzy wykres benchmarku i oblicza metryki dla wielu tickerów asynchronicznie."""
     all_results = {}
     accuracy_scores = {}
     max_prediction_length = config['model']['max_prediction_length']
     trim_date = pd.Timestamp(datetime.now(), tz='UTC') - pd.Timedelta(days=max_prediction_length)
-    start_date = trim_date - pd.Timedelta(days=config['prediction']['benchmark_historical_days'])
+    start_date = trim_date - pd.Timedelta(days=years * 365)
     model_name = config['model_name']
     temp_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data', 'temp')
     os.makedirs(temp_dir, exist_ok=True)
@@ -165,6 +165,7 @@ async def create_benchmark_plot(config, benchmark_tickers, historical_close_dict
 
     # Pobieranie danych dla wszystkich tickerów
     logger.info("Pobieranie danych dla wszystkich tickerów...")
+    config_manager = ConfigManager()  # Singleton
     tasks = [fetch_ticker_data(ticker, start_date, datetime.now()) for ticker in benchmark_tickers]
     ticker_data_results = await asyncio.gather(*tasks)
     ticker_data_dict = {ticker: data for ticker, data in ticker_data_results if data is not None}
@@ -179,7 +180,7 @@ async def create_benchmark_plot(config, benchmark_tickers, historical_close_dict
     try:
         temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.csv', dir=temp_dir)
         temp_raw_data_path = temp_file.name
-        temp_file.close()  # Explicitly close the file
+        temp_file.close()
         first_ticker = next(iter(ticker_data_dict))
         first_data = ticker_data_dict[first_ticker]
         first_data.reset_index().to_csv(temp_raw_data_path, index=False)
@@ -296,7 +297,6 @@ async def create_benchmark_plot(config, benchmark_tickers, historical_close_dict
         metrics_df = pd.DataFrame(metrics_data)
 
         if not metrics_df.empty:
-            # Formatowanie wartości do wyświetlenia
             format_dict = {
                 'Acc': '{:.2f}%',
                 'MAPE': '{:.2f}%',
@@ -308,7 +308,6 @@ async def create_benchmark_plot(config, benchmark_tickers, historical_close_dict
         return all_results
 
     finally:
-        # Sprzątanie zasobów
         if 'model' in locals():
             del model
         if 'dataset' in locals():
@@ -319,18 +318,17 @@ async def create_benchmark_plot(config, benchmark_tickers, historical_close_dict
             torch.cuda.empty_cache()
             logger.info(f"Pamięć GPU po sprzątaniu: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
         if temp_file is not None and os.path.exists(temp_raw_data_path):
-            for _ in range(3):  # Try up to 3 times to handle file locking
+            for _ in range(3):
                 try:
                     os.remove(temp_raw_data_path)
                     logger.info(f"Temporary file {temp_raw_data_path} removed.")
                     break
                 except PermissionError as e:
                     logger.warning(f"Failed to remove temporary file {temp_raw_data_path}: {e}. Retrying...")
-                    time.sleep(0.1)  # Short delay to allow file release
+                    time.sleep(0.1)
                 except Exception as e:
                     logger.error(f"Unexpected error while removing {temp_raw_data_path}: {e}")
                     break
-        # Clean temp directory after operation
         clean_temp_dir(temp_dir)
 
 def save_benchmark_to_csv(benchmark_date, all_results, model_name):
