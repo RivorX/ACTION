@@ -167,16 +167,18 @@ def preprocess_data(config, ticker_data, ticker, normalizers, historical_mode=Fa
     return ticker_data, original_close
 
 def generate_predictions(config, dataset, model, ticker_data):
+    import time
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logger.info(f"Generowanie predykcji na urządzeniu: {device}")
+    start_time = time.time()
     model = model.to(device)
-    
+
     # Upewnienie się, że kolumny kategoryczne są stringami
     categorical_columns = ['Day_of_Week', 'Month', 'Sector']
     for cat_col in categorical_columns:
         if cat_col in ticker_data.columns:
             ticker_data[cat_col] = ticker_data[cat_col].astype(str)
-    
+
     ticker_dataset = TimeSeriesDataSet.from_parameters(
         dataset.get_parameters(),
         ticker_data,
@@ -189,49 +191,49 @@ def generate_predictions(config, dataset, model, ticker_data):
         }
     ).to_dataloader(train=False, batch_size=config['prediction']['batch_size'], num_workers=4)
 
-    # Użycie float16 w autocast
+    # Użycie float32 w autocast
     with torch.no_grad(), torch.amp.autocast(device_type='cuda' if torch.cuda.is_available() else 'cpu', dtype=torch.float32):
         predictions = model.predict(ticker_dataset, mode="quantiles", return_x=True)
+    elapsed_time = time.time() - start_time
+    logger.info(f"Czas generowania predykcji: {elapsed_time:.2f} sekundy")
     logger.info(f"Kształt predictions.output: {predictions.output.shape}")
 
     pred_array = predictions.output.to('cpu')
     target_normalizer = dataset.target_normalizer
-    
     pred_array = target_normalizer.inverse_transform(pred_array)
-    
     last_close_price = ticker_data['Close'].iloc[-1]
-    
+
     try:
         with open(config['data']['normalizers_path'], 'rb') as f:
             normalizers = pickle.load(f)
         close_normalizer = normalizers.get('Close', target_normalizer)
     except:
         close_normalizer = target_normalizer
-    
+
     last_close_denorm = close_normalizer.inverse_transform(torch.tensor([[last_close_price]]).float())
     last_close_denorm = np.expm1(last_close_denorm.numpy())[0, 0]
-    
+
     if len(pred_array.shape) == 3:
         relative_returns_median = pred_array[0, :, 1]
         relative_returns_lower = pred_array[0, :, 0]
         relative_returns_upper = pred_array[0, :, 2]
-        
+
         current_price = last_close_denorm
         median = []
         lower_bound = []
         upper_bound = []
-        
+
         for i in range(len(relative_returns_median)):
             price_median = current_price * (1 + relative_returns_median[i])
             price_lower = current_price * (1 + relative_returns_lower[i])
             price_upper = current_price * (1 + relative_returns_upper[i])
-            
+
             median.append(price_median)
             lower_bound.append(price_lower)
             upper_bound.append(price_upper)
-            
+
             current_price = price_median
-        
+
         median = np.array(median)
         lower_bound = np.array(lower_bound)
         upper_bound = np.array(upper_bound)
