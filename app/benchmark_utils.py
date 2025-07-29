@@ -117,10 +117,10 @@ async def process_ticker(ticker, full_data, config, temp_raw_data_path, max_pred
             'predictions': median.tolist(),
             'historical_pred_close': historical_pred_close,
             'metrics': {
-                'Accuracy': accuracy,
+                'Acc': accuracy,
                 'MAPE': mape,
                 'MAE': mae,
-                'Directional_Accuracy': directional_accuracy
+                'DirAcc': directional_accuracy
             }
         }
 
@@ -133,34 +133,35 @@ async def process_ticker(ticker, full_data, config, temp_raw_data_path, max_pred
             logger.info(f"Temporary file {temp_raw_data_path} removed.")
 
 async def create_benchmark_plot(config, benchmark_tickers, historical_close_dict):
-    """Creates benchmark plot and calculates metrics for multiple tickers asynchronously."""
+    """Tworzy wykres benchmarku i oblicza metryki dla wielu tickerów asynchronicznie."""
     all_results = {}
     accuracy_scores = {}
     temp_raw_data_path = 'data/temp_benchmark_data.csv'
     max_prediction_length = config['model']['max_prediction_length']
     trim_date = pd.Timestamp(datetime.now(), tz='UTC') - pd.Timedelta(days=max_prediction_length)
     start_date = trim_date - pd.Timedelta(days=720)
+    model_name = config['model_name']
 
-    # Fetch data for all tickers
-    logger.info("Fetching data for all tickers...")
+    # Pobieranie danych dla wszystkich tickerów
+    logger.info("Pobieranie danych dla wszystkich tickerów...")
     tasks = [fetch_ticker_data(ticker, start_date, datetime.now()) for ticker in benchmark_tickers]
     ticker_data_results = await asyncio.gather(*tasks)
     ticker_data_dict = {ticker: data for ticker, data in ticker_data_results if data is not None}
 
     if not ticker_data_dict:
-        logger.error("Failed to fetch data for any ticker.")
+        logger.error("Nie udało się pobrać danych dla żadnego tickera.")
         return accuracy_scores
 
-    # Load model once
-    logger.info("Loading model and data...")
+    # Wczytanie modelu raz
+    logger.info("Wczytywanie modelu i danych...")
     first_ticker = next(iter(ticker_data_dict))
     first_data = ticker_data_dict[first_ticker]
     first_data.reset_index().to_csv(temp_raw_data_path, index=False)
     _, dataset, normalizers, model = load_data_and_model(config, first_ticker, temp_raw_data_path, historical_mode=True)
-    logger.info(f"Model, dataset, and normalizers loaded successfully for {first_ticker}")
+    logger.info(f"Model, dataset i normalizatory wczytane pomyślnie dla {first_ticker}")
 
     try:
-        # Process tickers asynchronously
+        # Przetwarzanie tickerów asynchronicznie
         tasks = [
             process_ticker(ticker, data, config, temp_raw_data_path, max_prediction_length, trim_date, dataset, normalizers, model)
             for ticker, data in ticker_data_dict.items()
@@ -170,12 +171,12 @@ async def create_benchmark_plot(config, benchmark_tickers, historical_close_dict
         for ticker, result in results:
             if result is not None and isinstance(result, dict):
                 all_results[ticker] = result
-                accuracy_scores[ticker] = result['metrics']['Accuracy']
+                accuracy_scores[ticker] = result['metrics']['Acc']
             else:
-                logger.warning(f"Skipped ticker {ticker} due to invalid result data.")
+                logger.warning(f"Pominięto ticker {ticker} z powodu niepoprawnych danych.")
                 accuracy_scores[ticker] = 0.0
 
-        # Create plot
+        # Tworzenie wykresu
         fig = go.Figure()
         colors = ['#0000FF', '#00FF00', '#FF0000', '#800080', '#FFA500', '#00FFFF', '#FF00FF', '#FFFF00', '#A52A2A', '#808080']
 
@@ -192,7 +193,7 @@ async def create_benchmark_plot(config, benchmark_tickers, historical_close_dict
             all_pred_close = [None] * len(historical_dates) + predictions
 
             if len(all_dates) != len(all_close) or len(all_dates) != len(all_pred_close):
-                logger.error(f"Length mismatch for {ticker}: all_dates={len(all_dates)}, all_close={len(all_close)}, all_pred_close={len(all_pred_close)}")
+                logger.error(f"Niezgodność długości dla {ticker}: all_dates={len(all_dates)}, all_close={len(all_close)}, all_pred_close={len(all_pred_close)}")
                 continue
 
             plot_data = pd.DataFrame({
@@ -255,20 +256,32 @@ async def create_benchmark_plot(config, benchmark_tickers, historical_close_dict
 
         st.plotly_chart(fig, use_container_width=True)
 
-        # Display metrics
+        # Wyświetlanie metryk w zwykłej tabeli
         st.subheader("Metryki predykcji dla każdej spółki")
-        metrics_df = pd.DataFrame({
-            ticker: data['metrics'] for ticker, data in all_results.items()
-        }).T.reset_index().rename(columns={'index': 'Ticker'})
-        st.dataframe(metrics_df.style.format({
-            'Accuracy': '{:.2f}%',
-            'MAPE': '{:.2f}%',
-            'MAE': '{:.2f}',
-            'Directional_Accuracy': '{:.2f}%'
-        }))
+        metrics_data = []
+        for ticker, data in all_results.items():
+            metrics = data['metrics']
+            metrics_data.append({
+                'Ticker': ticker,
+                'Acc': metrics['Acc'],
+                'MAPE': metrics['MAPE'],
+                'MAE': metrics['MAE'],
+                'DirAcc': metrics['DirAcc']
+            })
+        metrics_df = pd.DataFrame(metrics_data)
+
+        if not metrics_df.empty:
+            # Formatowanie wartości do wyświetlenia
+            format_dict = {
+                'Acc': '{:.2f}%',
+                'MAPE': '{:.2f}%',
+                'MAE': '{:.2f}',
+                'DirAcc': '{:.2f}%'
+            }
+            st.dataframe(metrics_df.style.format(format_dict))
 
     finally:
-        # Clean up resources
+        # Sprzątanie zasobów
         if model is not None:
             del model
         if dataset is not None:
@@ -277,24 +290,24 @@ async def create_benchmark_plot(config, benchmark_tickers, historical_close_dict
             del normalizers
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-            logger.info(f"GPU memory after cleanup: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
+            logger.info(f"Pamięć GPU po sprzątaniu: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
         if os.path.exists(temp_raw_data_path):
             os.remove(temp_raw_data_path)
-            logger.info(f"Temporary file {temp_raw_data_path} removed.")
+            logger.info(f"Usunięto plik tymczasowy {temp_raw_data_path}.")
 
     return all_results
 
-def save_benchmark_to_csv(benchmark_date, all_results):
-    """Saves benchmark results to CSV with history, including all metrics."""
+def save_benchmark_to_csv(benchmark_date, all_results, model_name):
+    """Saves benchmark results to CSV with history, including all metrics and model name."""
     csv_file = 'data/benchmarks_history.csv'
-    metrics = ['Accuracy', 'MAPE', 'MAE', 'Directional_Accuracy']
-    columns = ['Date']
+    metrics = ['Acc', 'MAPE', 'MAE', 'DirAcc']
+    columns = ['Date', 'Model_Name']
     for ticker in all_results.keys():
         for metric in metrics:
             columns.append(f"{ticker}_{metric}")
-    columns.extend(['Average_' + metric for metric in metrics])
+    columns.extend(['Avg_' + metric for metric in metrics])
     
-    metrics_data = {'Date': [benchmark_date]}
+    metrics_data = {'Date': [benchmark_date], 'Model_Name': [model_name]}
     valid_metrics = {}
     
     for ticker, data in all_results.items():
@@ -311,10 +324,10 @@ def save_benchmark_to_csv(benchmark_date, all_results):
     if valid_metrics:
         for metric in metrics:
             values = [m.get(metric, 0.0) for m in valid_metrics.values() if m.get(metric, 0.0) != 0.0]
-            metrics_data[f"Average_{metric}"] = [np.mean(values) if values else 0.0]
+            metrics_data[f"Avg_{metric}"] = [np.mean(values) if values else 0.0]
     else:
         for metric in metrics:
-            metrics_data[f"Average_{metric}"] = [0.0]
+            metrics_data[f"Avg_{metric}"] = [0.0]
     
     new_data = pd.DataFrame(metrics_data)
     
@@ -328,17 +341,41 @@ def save_benchmark_to_csv(benchmark_date, all_results):
     logger.info(f"Benchmark results saved to {csv_file}")
 
 def load_benchmark_history(benchmark_tickers):
-    """Loads benchmark history from CSV."""
+    """Loads benchmark history from CSV with nested headers."""
     csv_file = 'data/benchmarks_history.csv'
-    columns = ['Date']
-    for ticker in benchmark_tickers:
-        columns.extend([f"{ticker}_Accuracy", f"{ticker}_Directional_Accuracy"])
-    columns.extend(['Average_Accuracy', 'Average_Directional_Accuracy'])
+    metrics = ['Acc', 'MAPE', 'MAE', 'DirAcc']
     
     if os.path.exists(csv_file):
         df = pd.read_csv(csv_file, dtype=str)
-        missing_cols = [col for col in columns if col not in df.columns]
-        for col in missing_cols:
-            df[col] = '0.0'
-        return df[columns].fillna('0.0')
-    return pd.DataFrame(columns=columns).fillna('0.0')
+        
+        # Create MultiIndex for columns in desired order: Podstawowe, Średnie, then per-ticker metrics
+        columns = ['Date', 'Model_Name']
+        multi_columns = [('Podstawowe', 'Date'), ('Podstawowe', 'Model_Name')]
+        for metric in metrics:
+            columns.append(f"Avg_{metric}")
+            multi_columns.append(('Średnie', metric))
+        for ticker in benchmark_tickers:
+            for metric in metrics:
+                columns.append(f"{ticker}_{metric}")
+                multi_columns.append((ticker, metric))
+        multi_columns = pd.MultiIndex.from_tuples(multi_columns)
+        
+        # Select and rename columns
+        df = df[columns].fillna('0.0')
+        
+        # Create DataFrame with MultiIndex
+        df.columns = multi_columns
+        
+        # Convert to numeric for proper formatting
+        for col in df.columns:
+            if col[0] != 'Podstawowe':  # Skip Date and Model_Name
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+        
+        return df
+    else:
+        # Create empty DataFrame with MultiIndex
+        multi_columns = pd.MultiIndex.from_tuples([('Podstawowe', 'Date'), ('Podstawowe', 'Model_Name')] + 
+                                                 [('Średnie', metric) for metric in metrics] +
+                                                 [(ticker, metric) for ticker in benchmark_tickers for metric in metrics])
+        df = pd.DataFrame(columns=multi_columns).fillna('0.0')
+        return df

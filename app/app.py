@@ -180,7 +180,7 @@ def main():
                         create_benchmark_plot(config, benchmark_tickers, {})
                     )
                     benchmark_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                    save_benchmark_to_csv(benchmark_date, all_results)
+                    save_benchmark_to_csv(benchmark_date, all_results, config['model_name'])
                 except Exception as e:
                     logger.error(f"Error generating benchmark: {e}")
                     st.error(f"Wystąpił błąd podczas generowania benchmarku: {str(e)}")
@@ -191,7 +191,19 @@ def main():
 
         st.subheader("Historia benchmarków")
         benchmark_history = load_benchmark_history(benchmark_tickers)
-        st.dataframe(benchmark_history)
+        format_dict = {
+            ('Podstawowe', 'Date'): '{}',
+            ('Podstawowe', 'Model_Name'): '{}'
+        }
+        for ticker in benchmark_tickers:
+            format_dict[(ticker, 'Acc')] = '{:.2f}%'
+            format_dict[(ticker, 'MAPE')] = '{:.2f}%'
+            format_dict[(ticker, 'MAE')] = '{:.2f}'
+            format_dict[(ticker, 'DirAcc')] = '{:.2f}%'
+        for metric in ['Acc', 'MAPE', 'DirAcc']:
+            format_dict[('Średnie', metric)] = '{:.2f}%'
+        format_dict[('Średnie', 'MAE')] = '{:.2f}'
+        st.dataframe(benchmark_history.style.format(format_dict))
 
 if __name__ == "__main__":
     main()
