@@ -8,6 +8,7 @@ import asyncio
 from datetime import datetime
 import tempfile
 import glob
+import time
 from scripts.data_fetcher import DataFetcher
 from scripts.config_manager import ConfigManager
 from scripts.prediction_engine import load_data_and_model, preprocess_data, generate_predictions
@@ -20,13 +21,17 @@ def clean_temp_dir(temp_dir):
     try:
         csv_files = glob.glob(os.path.join(temp_dir, "*.csv"))
         for file in csv_files:
-            try:
-                os.remove(file)
-                logger.info(f"Removed temporary file: {file}")
-            except PermissionError as e:
-                logger.warning(f"Failed to remove temporary file {file}: {e}")
-            except Exception as e:
-                logger.error(f"Unexpected error while removing {file}: {e}")
+            for _ in range(3):  # Try up to 3 times to handle file locking
+                try:
+                    os.remove(file)
+                    logger.info(f"Removed temporary file: {file}")
+                    break
+                except PermissionError as e:
+                    logger.warning(f"Failed to remove temporary file {file}: {e}. Retrying...")
+                    time.sleep(0.1)  # Short delay to allow file release
+                except Exception as e:
+                    logger.error(f"Unexpected error while removing {file}: {e}")
+                    break
     except Exception as e:
         logger.error(f"Error cleaning temporary directory {temp_dir}: {e}")
 
@@ -170,157 +175,163 @@ async def create_benchmark_plot(config, benchmark_tickers, historical_close_dict
 
     # Wczytanie modelu raz
     logger.info("Wczytywanie modelu i danych...")
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.csv', dir=temp_dir) as temp_file:
+    temp_file = None
+    try:
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.csv', dir=temp_dir)
         temp_raw_data_path = temp_file.name
+        temp_file.close()  # Explicitly close the file
         first_ticker = next(iter(ticker_data_dict))
         first_data = ticker_data_dict[first_ticker]
         first_data.reset_index().to_csv(temp_raw_data_path, index=False)
         _, dataset, normalizers, model = load_data_and_model(config, first_ticker, temp_raw_data_path, historical_mode=True)
         logger.info(f"Model, dataset i normalizatory wczytane pomyślnie dla {first_ticker}")
 
-        try:
-            # Przetwarzanie tickerów asynchronicznie
-            tasks = [
-                process_ticker(ticker, data, config, temp_raw_data_path, max_prediction_length, trim_date, dataset, normalizers, model)
-                for ticker, data in ticker_data_dict.items()
-            ]
-            results = await asyncio.gather(*tasks)
+        # Przetwarzanie tickerów asynchronicznie
+        tasks = [
+            process_ticker(ticker, data, config, temp_raw_data_path, max_prediction_length, trim_date, dataset, normalizers, model)
+            for ticker, data in ticker_data_dict.items()
+        ]
+        results = await asyncio.gather(*tasks)
 
-            for ticker, result in results:
-                if result is not None and isinstance(result, dict):
-                    all_results[ticker] = result
-                    accuracy_scores[ticker] = result['metrics']['Acc']
-                else:
-                    logger.warning(f"Pominięto ticker {ticker} z powodu niepoprawnych danych.")
-                    accuracy_scores[ticker] = 0.0
+        for ticker, result in results:
+            if result is not None and isinstance(result, dict):
+                all_results[ticker] = result
+                accuracy_scores[ticker] = result['metrics']['Acc']
+            else:
+                logger.warning(f"Pominięto ticker {ticker} z powodu niepoprawnych danych.")
+                accuracy_scores[ticker] = 0.0
 
-            # Tworzenie wykresu
-            fig = go.Figure()
-            colors = ['#0000FF', '#00FF00', '#FF0000', '#800080', '#FFA500', '#00FFFF', '#FF00FF', '#FFFF00', '#A52A2A', '#808080']
+        # Tworzenie wykresu
+        fig = go.Figure()
+        colors = ['#0000FF', '#00FF00', '#FF0000', '#800080', '#FFA500', '#00FFFF', '#FF00FF', '#FFFF00', '#A52A2A', '#808080']
 
-            for idx, (ticker, data) in enumerate(all_results.items()):
-                color_idx = idx % len(colors)
-                historical_dates = data['historical_dates']
-                pred_dates = data['pred_dates']
-                historical_close = data['historical_close']
-                historical_pred_close = data['historical_pred_close']
-                predictions = data['predictions']
+        for idx, (ticker, data) in enumerate(all_results.items()):
+            color_idx = idx % len(colors)
+            historical_dates = data['historical_dates']
+            pred_dates = data['pred_dates']
+            historical_close = data['historical_close']
+            historical_pred_close = data['historical_pred_close']
+            predictions = data['predictions']
 
-                combined_dates = historical_dates + pred_dates
-                combined_close = historical_close + historical_pred_close
-                combined_pred_close = [None] * len(historical_dates) + predictions
+            combined_dates = historical_dates + pred_dates
+            combined_close = historical_close + historical_pred_close
+            combined_pred_close = [None] * len(historical_dates) + predictions
 
-                if len(combined_dates) != len(combined_close) or len(combined_dates) != len(combined_pred_close):
-                    logger.error(f"Niezgodność długości dla {ticker}: combined_dates={len(combined_dates)}, combined_close={len(combined_close)}, combined_pred_close={len(combined_pred_close)}")
-                    continue
+            if len(combined_dates) != len(combined_close) or len(combined_dates) != len(combined_pred_close):
+                logger.error(f"Niezgodność długości dla {ticker}: combined_dates={len(combined_dates)}, combined_close={len(combined_close)}, combined_pred_close={len(combined_pred_close)}")
+                continue
 
-                plot_data = pd.DataFrame({
-                    'Date': combined_dates,
-                    'Close': combined_close,
-                    'Predicted_Close': combined_pred_close
-                })
-                plot_data['Date'] = pd.to_datetime(plot_data['Date'], utc=True)
+            plot_data = pd.DataFrame({
+                'Date': combined_dates,
+                'Close': combined_close,
+                'Predicted_Close': combined_pred_close
+            })
+            plot_data['Date'] = pd.to_datetime(plot_data['Date'], utc=True)
 
-                fig.add_trace(go.Scatter(
-                    x=plot_data['Date'],
-                    y=plot_data['Close'],
-                    mode='lines',
-                    name=f'{ticker} (Historia)',
-                    line=dict(color=colors[color_idx]),
-                    legendgroup=ticker
-                ))
-                fig.add_trace(go.Scatter(
-                    x=plot_data['Date'],
-                    y=plot_data['Predicted_Close'],
-                    mode='lines',
-                    name=f'{ticker} (Predykcja)',
-                    line=dict(color=colors[color_idx], dash='dash'),
-                    legendgroup=ticker
-                ))
+            fig.add_trace(go.Scatter(
+                x=plot_data['Date'],
+                y=plot_data['Close'],
+                mode='lines',
+                name=f'{ticker} (Historia)',
+                line=dict(color=colors[color_idx]),
+                legendgroup=ticker
+            ))
+            fig.add_trace(go.Scatter(
+                x=plot_data['Date'],
+                y=plot_data['Predicted_Close'],
+                mode='lines',
+                name=f'{ticker} (Predykcja)',
+                line=dict(color=colors[color_idx], dash='dash'),
+                legendgroup=ticker
+            ))
 
-                split_date = pd.Timestamp(pred_dates[0]).isoformat()
-                fig.add_shape(
-                    type="line",
-                    x0=split_date,
-                    x1=split_date,
-                    y0=0,
-                    y1=1,
-                    xref="x",
-                    yref="paper",
-                    line=dict(color="red", width=2, dash="dash")
-                )
-                fig.add_annotation(
-                    x=split_date,
-                    y=1.05,
-                    xref="x",
-                    yref="paper",
-                    text="Początek predykcji",
-                    showarrow=False,
-                    font=dict(size=12),
-                    align="center"
-                )
-
-            fig.update_layout(
-                title="Porównanie predykcji z historią dla wybranych spółek",
-                xaxis_title="Data",
-                yaxis_title="Cena zamknięcia",
-                showlegend=True,
-                xaxis=dict(rangeslider=dict(visible=True), type='date'),
-                legend=dict(
-                    itemclick="toggle",
-                    itemdoubleclick="toggleothers"
-                )
+            split_date = pd.Timestamp(pred_dates[0]).isoformat()
+            fig.add_shape(
+                type="line",
+                x0=split_date,
+                x1=split_date,
+                y0=0,
+                y1=1,
+                xref="x",
+                yref="paper",
+                line=dict(color="red", width=2, dash="dash")
+            )
+            fig.add_annotation(
+                x=split_date,
+                y=1.05,
+                xref="x",
+                yref="paper",
+                text="Początek predykcji",
+                showarrow=False,
+                font=dict(size=12),
+                align="center"
             )
 
-            st.plotly_chart(fig, use_container_width=True)
+        fig.update_layout(
+            title="Porównanie predykcji z historią dla wybranych spółek",
+            xaxis_title="Data",
+            yaxis_title="Cena zamknięcia",
+            showlegend=True,
+            xaxis=dict(rangeslider=dict(visible=True), type='date'),
+            legend=dict(
+                itemclick="toggle",
+                itemdoubleclick="toggleothers"
+            )
+        )
 
-            # Wyświetlanie metryk w zwykłej tabeli
-            st.subheader("Metryki predykcji dla każdej spółki")
-            metrics_data = []
-            for ticker, data in all_results.items():
-                metrics = data['metrics']
-                metrics_data.append({
-                    'Ticker': ticker,
-                    'Acc': metrics['Acc'],
-                    'MAPE': metrics['MAPE'],
-                    'MAE': metrics['MAE'],
-                    'DirAcc': metrics['DirAcc']
-                })
-            metrics_df = pd.DataFrame(metrics_data)
+        st.plotly_chart(fig, use_container_width=True)
 
-            if not metrics_df.empty:
-                # Formatowanie wartości do wyświetlenia
-                format_dict = {
-                    'Acc': '{:.2f}%',
-                    'MAPE': '{:.2f}%',
-                    'MAE': '{:.2f}',
-                    'DirAcc': '{:.2f}%'
-                }
-                st.dataframe(metrics_df.style.format(format_dict))
+        # Wyświetlanie metryk w zwykłej tabeli
+        st.subheader("Metryki predykcji dla każdej spółki")
+        metrics_data = []
+        for ticker, data in all_results.items():
+            metrics = data['metrics']
+            metrics_data.append({
+                'Ticker': ticker,
+                'Acc': metrics['Acc'],
+                'MAPE': metrics['MAPE'],
+                'MAE': metrics['MAE'],
+                'DirAcc': metrics['DirAcc']
+            })
+        metrics_df = pd.DataFrame(metrics_data)
 
-        finally:
-            # Sprzątanie zasobów
-            if model is not None:
-                del model
-            if dataset is not None:
-                del dataset
-            if normalizers is not None:
-                del normalizers
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                logger.info(f"Pamięć GPU po sprzątaniu: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
-            if os.path.exists(temp_raw_data_path):
+        if not metrics_df.empty:
+            # Formatowanie wartości do wyświetlenia
+            format_dict = {
+                'Acc': '{:.2f}%',
+                'MAPE': '{:.2f}%',
+                'MAE': '{:.2f}',
+                'DirAcc': '{:.2f}%'
+            }
+            st.dataframe(metrics_df.style.format(format_dict))
+
+        return all_results
+
+    finally:
+        # Sprzątanie zasobów
+        if 'model' in locals():
+            del model
+        if 'dataset' in locals():
+            del dataset
+        if 'normalizers' in locals():
+            del normalizers
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            logger.info(f"Pamięć GPU po sprzątaniu: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
+        if temp_file is not None and os.path.exists(temp_raw_data_path):
+            for _ in range(3):  # Try up to 3 times to handle file locking
                 try:
                     os.remove(temp_raw_data_path)
                     logger.info(f"Temporary file {temp_raw_data_path} removed.")
+                    break
                 except PermissionError as e:
-                    logger.warning(f"Failed to remove temporary file {temp_raw_data_path}: {e}")
+                    logger.warning(f"Failed to remove temporary file {temp_raw_data_path}: {e}. Retrying...")
+                    time.sleep(0.1)  # Short delay to allow file release
                 except Exception as e:
                     logger.error(f"Unexpected error while removing {temp_raw_data_path}: {e}")
-            # Clean temp directory after operation
-            clean_temp_dir(temp_dir)
-
-    return all_results
+                    break
+        # Clean temp directory after operation
+        clean_temp_dir(temp_dir)
 
 def save_benchmark_to_csv(benchmark_date, all_results, model_name):
     """Saves benchmark results to CSV with history, including all metrics and model name."""

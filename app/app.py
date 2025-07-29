@@ -10,6 +10,17 @@ from datetime import datetime, timedelta
 import sys
 import tempfile
 import glob
+import time
+
+# Apply nest_asyncio for Streamlit compatibility
+nest_asyncio.apply()
+
+# Configure logging to suppress Streamlit LocalSourcesWatcher warnings
+logging.getLogger("streamlit.watcher.local_sources_watcher").setLevel(logging.ERROR)
+
+# Logging configuration
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # Add project root to sys.path
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -23,25 +34,22 @@ from app.config_loader import load_config, load_tickers_and_names, load_benchmar
 from app.plot_utils import create_stock_plot
 from app.benchmark_utils import create_benchmark_plot, save_benchmark_to_csv, load_benchmark_history
 
-# Apply nest_asyncio for Streamlit compatibility
-nest_asyncio.apply()
-
-# Logging configuration
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
 def clean_temp_dir(temp_dir):
     """Cleans all CSV files in the specified temporary directory."""
     try:
         csv_files = glob.glob(os.path.join(temp_dir, "*.csv"))
         for file in csv_files:
-            try:
-                os.remove(file)
-                logger.info(f"Removed temporary file: {file}")
-            except PermissionError as e:
-                logger.warning(f"Failed to remove temporary file {file}: {e}")
-            except Exception as e:
-                logger.error(f"Unexpected error while removing {file}: {e}")
+            for _ in range(3):  # Try up to 3 times to handle file locking
+                try:
+                    os.remove(file)
+                    logger.info(f"Removed temporary file: {file}")
+                    break
+                except PermissionError as e:
+                    logger.warning(f"Failed to remove temporary file {file}: {e}. Retrying...")
+                    time.sleep(0.1)  # Short delay to allow file release
+                except Exception as e:
+                    logger.error(f"Unexpected error while removing {file}: {e}")
+                    break
     except Exception as e:
         logger.error(f"Error cleaning temporary directory {temp_dir}: {e}")
 
@@ -62,79 +70,91 @@ class StockPredictor:
 
     def predict(self, ticker, start_date, end_date):
         """Generates predictions for a given ticker."""
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.csv', dir=self.temp_dir) as temp_file:
+        temp_file = None
+        try:
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.csv', dir=self.temp_dir)
             temp_raw_data_path = temp_file.name
-            try:
-                # Fetch data
-                new_data = self.fetch_stock_data(ticker, start_date, end_date)
-                if new_data.empty:
-                    raise ValueError(f"No data available for {ticker}")
+            temp_file.close()  # Explicitly close the file
+            # Fetch data
+            new_data = self.fetch_stock_data(ticker, start_date, end_date)
+            if new_data.empty:
+                raise ValueError(f"No data available for {ticker}")
 
-                new_data.to_csv(temp_raw_data_path, index=False)
-                logger.info(f"Data for {ticker} saved to {temp_raw_data_path}")
+            new_data.to_csv(temp_raw_data_path, index=False)
+            logger.info(f"Data for {ticker} saved to {temp_raw_data_path}")
 
-                # Load model and preprocess data
-                _, dataset, normalizers, model = load_data_and_model(self.config, ticker, temp_raw_data_path)
-                ticker_data, original_close = preprocess_data(self.config, new_data, ticker, normalizers)
-                device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-                with torch.no_grad():
-                    median, lower_bound, upper_bound = generate_predictions(self.config, dataset, model, ticker_data)
-                
-                return ticker_data, original_close, median, lower_bound, upper_bound
-            except Exception as e:
-                logger.error(f"Error generating predictions for {ticker}: {e}")
-                raise
-            finally:
-                if os.path.exists(temp_raw_data_path):
+            # Load model and preprocess data
+            _, dataset, normalizers, model = load_data_and_model(self.config, ticker, temp_raw_data_path)
+            ticker_data, original_close = preprocess_data(self.config, new_data, ticker, normalizers)
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            with torch.no_grad():
+                median, lower_bound, upper_bound = generate_predictions(self.config, dataset, model, ticker_data)
+            
+            return ticker_data, original_close, median, lower_bound, upper_bound
+        except Exception as e:
+            logger.error(f"Error generating predictions for {ticker}: {e}")
+            raise
+        finally:
+            if temp_file is not None and os.path.exists(temp_raw_data_path):
+                for _ in range(3):  # Try up to 3 times to handle file locking
                     try:
                         os.remove(temp_raw_data_path)
                         logger.info(f"Temporary file {temp_raw_data_path} removed.")
+                        break
                     except PermissionError as e:
-                        logger.warning(f"Failed to remove temporary file {temp_raw_data_path}: {e}")
+                        logger.warning(f"Failed to remove temporary file {temp_raw_data_path}: {e}. Retrying...")
+                        time.sleep(0.1)  # Short delay to allow file release
                     except Exception as e:
                         logger.error(f"Unexpected error while removing {temp_raw_data_path}: {e}")
+                        break
 
     def predict_historical(self, ticker, start_date, end_date, trim_date):
         """Compares predictions with historical data."""
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.csv', dir=self.temp_dir) as temp_file:
+        temp_file = None
+        try:
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.csv', dir=self.temp_dir)
             temp_raw_data_path = temp_file.name
-            try:
-                # Fetch full data
-                full_data = self.fetch_stock_data(ticker, start_date, end_date)
-                if full_data.empty:
-                    raise ValueError(f"No data available for {ticker}")
-                
-                full_data = full_data[full_data['Ticker'] == ticker].copy()
-                full_data['Date'] = pd.to_datetime(full_data['Date'], utc=True)
-                new_data = full_data[full_data['Date'] <= trim_date].copy()
-                if new_data.empty:
-                    raise ValueError(f"No data before {trim_date} for {ticker}")
-                
-                new_data.to_csv(temp_raw_data_path, index=False)
-                logger.info(f"Data for {ticker} saved to {temp_raw_data_path}")
-                
-                # Load model and preprocess data
-                _, dataset, normalizers, model = load_data_and_model(self.config, ticker, temp_raw_data_path, historical_mode=True)
-                ticker_data, original_close = preprocess_data(self.config, new_data, ticker, normalizers, historical_mode=True)
-                device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-                with torch.no_grad():
-                    median, lower_bound, upper_bound = generate_predictions(self.config, dataset, model, ticker_data)
-                
-                full_data.set_index('Date', inplace=True)
-                historical_close = full_data['Close']
-                return ticker_data, original_close, median, lower_bound, upper_bound, historical_close
-            except Exception as e:
-                logger.error(f"Error comparing predictions with history for {ticker}: {e}")
-                raise
-            finally:
-                if os.path.exists(temp_raw_data_path):
+            temp_file.close()  # Explicitly close the file
+            # Fetch full data
+            full_data = self.fetch_stock_data(ticker, start_date, end_date)
+            if full_data.empty:
+                raise ValueError(f"No data available for {ticker}")
+            
+            full_data = full_data[full_data['Ticker'] == ticker].copy()
+            full_data['Date'] = pd.to_datetime(full_data['Date'], utc=True)
+            new_data = full_data[full_data['Date'] <= trim_date].copy()
+            if new_data.empty:
+                raise ValueError(f"No data before {trim_date} for {ticker}")
+            
+            new_data.to_csv(temp_raw_data_path, index=False)
+            logger.info(f"Data for {ticker} saved to {temp_raw_data_path}")
+            
+            # Load model and preprocess data
+            _, dataset, normalizers, model = load_data_and_model(self.config, ticker, temp_raw_data_path, historical_mode=True)
+            ticker_data, original_close = preprocess_data(self.config, new_data, ticker, normalizers, historical_mode=True)
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            with torch.no_grad():
+                median, lower_bound, upper_bound = generate_predictions(self.config, dataset, model, ticker_data)
+            
+            full_data.set_index('Date', inplace=True)
+            historical_close = full_data['Close']
+            return ticker_data, original_close, median, lower_bound, upper_bound, historical_close
+        except Exception as e:
+            logger.error(f"Error comparing predictions with history for {ticker}: {e}")
+            raise
+        finally:
+            if temp_file is not None and os.path.exists(temp_raw_data_path):
+                for _ in range(3):  # Try up to 3 times to handle file locking
                     try:
                         os.remove(temp_raw_data_path)
                         logger.info(f"Temporary file {temp_raw_data_path} removed.")
+                        break
                     except PermissionError as e:
-                        logger.warning(f"Failed to remove temporary file {temp_raw_data_path}: {e}")
+                        logger.warning(f"Failed to remove temporary file {temp_raw_data_path}: {e}. Retrying...")
+                        time.sleep(0.1)  # Short delay to allow file release
                     except Exception as e:
                         logger.error(f"Unexpected error while removing {temp_raw_data_path}: {e}")
+                        break
 
 def main():
     """Main Streamlit application function."""
@@ -210,10 +230,7 @@ def main():
         if st.button("Generuj benchmark"):
             with st.spinner('Trwa generowanie benchmarku...'):
                 try:
-                    loop = asyncio.get_event_loop()
-                    all_results = loop.run_until_complete(
-                        create_benchmark_plot(config, benchmark_tickers, {})
-                    )
+                    all_results = asyncio.run(create_benchmark_plot(config, benchmark_tickers, {}))
                     benchmark_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                     save_benchmark_to_csv(benchmark_date, all_results, config['model_name'])
                 except Exception as e:
