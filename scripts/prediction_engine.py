@@ -34,7 +34,7 @@ async def load_data_and_model_async(config, ticker, temp_raw_data_path, historic
     # Asynchroniczne pobieranie danych
     async with aiohttp.ClientSession() as session:
         fetcher = DataFetcher(ConfigManager())
-        start_date = pd.Timestamp(datetime.now(), tz='UTC') - pd.Timedelta(days=730 + trim_days)
+        start_date = pd.Timestamp(datetime.now(), tz='UTC') - pd.Timedelta(days=config['prediction']['historical_days'] + trim_days)
         new_data = await fetcher.fetch_stock_data(ticker, start_date, datetime.now(), session)
         if new_data.empty:
             logger.error(f"Nie udało się pobrać danych dla {ticker}")
@@ -191,7 +191,7 @@ def generate_predictions(config, dataset, model, ticker_data):
             'Day_of_Week': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=False),
             'Month': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=False)
         }
-    ).to_dataloader(train=False, batch_size=128, num_workers=4)
+    ).to_dataloader(train=False, batch_size=config['prediction']['batch_size'], num_workers=4)
 
     # Użycie float16 w autocast
     with torch.no_grad(), torch.amp.autocast(device_type='cuda' if torch.cuda.is_available() else 'cpu', dtype=torch.float32):
