@@ -2,7 +2,7 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from pytorch_lightning.loggers import CSVLogger
 import torch
-from pytorch_forecasting import TimeSeriesDataSet
+from pytorch_forecasting import TimeSeriesDataSet, NaNLabelEncoder
 import pytorch_forecasting
 from scripts.data_fetcher import DataFetcher
 from scripts.preprocessor import DataPreprocessor
@@ -145,13 +145,11 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
             if nan_count > 0:
                 logger.warning(f"Cecha {col} ma {nan_count} wartości NaN po konwersji")
     
-    categorical_columns = ['Day_of_Week', 'Month', 'Sector']
+    categorical_columns = ['Day_of_Week', 'Month']
     for cat_col in categorical_columns:
         if cat_col in df.columns:
             if cat_col == 'Day_of_Week':
                 df[cat_col] = pd.Categorical(df[cat_col], categories=[str(i) for i in range(7)], ordered=False)
-            elif cat_col == 'Sector':
-                df[cat_col] = pd.Categorical(df[cat_col], categories=ALL_SECTORS, ordered=False)
             df[cat_col] = df[cat_col].astype(str)
 
     # Filtracja grup z wystarczającą liczbą rekordów
@@ -173,19 +171,21 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
     train_dataset = TimeSeriesDataSet.from_parameters(
         dataset.get_parameters(),
         train_df,
+        static_categoricals=["Sector"], 
         categorical_encoders={
-            'Sector': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=False),
-            'Day_of_Week': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=False),
-            'Month': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=False)
+            'Sector': NaNLabelEncoder(add_nan=False),
+            'Day_of_Week': NaNLabelEncoder(add_nan=False),
+            'Month': NaNLabelEncoder(add_nan=False)
         }
     )
     val_dataset = TimeSeriesDataSet.from_parameters(
         dataset.get_parameters(),
         val_df,
+        static_categoricals=["Sector"], 
         categorical_encoders={
-            'Sector': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=False),
-            'Day_of_Week': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=False),
-            'Month': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=False)
+            'Sector': NaNLabelEncoder(add_nan=False),
+            'Day_of_Week': NaNLabelEncoder(add_nan=False),
+            'Month': NaNLabelEncoder(add_nan=False)
         }
     )
 

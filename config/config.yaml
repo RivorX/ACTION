@@ -2,7 +2,7 @@
 # Ten plik zawiera ustawienia dla modelu Temporal Fusion Transformer
 
 # Nazwa modelu
-model_name: Gen_4_1_mini
+model_name: Gen_4_2_mini
 
 # Ustawienia modelu
 model:

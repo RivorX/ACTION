@@ -302,7 +302,7 @@ class DataPreprocessor:
 
         targets = ["Relative_Returns", "Future_Volume", "Future_Volatility"]
         
-        categorical_features = ["Day_of_Week", "Month", "Sector"]
+        categorical_features = ["Day_of_Week", "Month"]
         valid_categorical_features = [f for f in categorical_features if f in df.columns]
         
         logger.info(f"Kategorie dla Day_of_Week: {self.day_of_week_categories}")
@@ -319,6 +319,7 @@ class DataPreprocessor:
             min_encoder_length=self.config['model']['min_encoder_length'],
             max_encoder_length=self.config['model']['max_encoder_length'],
             max_prediction_length=self.config['model']['max_prediction_length'],
+            static_categoricals=["Sector"],
             time_varying_known_reals=[f for f in valid_numeric_features if f not in targets],
             time_varying_known_categoricals=valid_categorical_features,
             time_varying_unknown_reals=["Relative_Returns"],

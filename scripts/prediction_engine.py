@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 from datetime import datetime
 import torch
-from pytorch_forecasting import TimeSeriesDataSet
+from pytorch_forecasting import TimeSeriesDataSet, NaNLabelEncoder
 from pytorch_forecasting.metrics import QuantileLoss
 import pytorch_forecasting.data.encoders
 import pickle
@@ -158,7 +158,7 @@ def preprocess_data(config, ticker_data, ticker, normalizers, historical_mode=Fa
         if feature in ticker_data.columns and feature in normalizers:
             ticker_data[feature] = normalizers[feature].transform(ticker_data[feature].values)
 
-    categorical_columns = ['Day_of_Week', 'Month', 'Sector']
+    categorical_columns = ['Day_of_Week', 'Month']
     for cat_col in categorical_columns:
         if cat_col in ticker_data.columns:
             ticker_data[cat_col] = ticker_data[cat_col].astype(str)
@@ -174,7 +174,7 @@ def generate_predictions(config, dataset, model, ticker_data):
     model = model.to(device)
 
     # Upewnienie się, że kolumny kategoryczne są stringami
-    categorical_columns = ['Day_of_Week', 'Month', 'Sector']
+    categorical_columns = ['Day_of_Week', 'Month']
     for cat_col in categorical_columns:
         if cat_col in ticker_data.columns:
             ticker_data[cat_col] = ticker_data[cat_col].astype(str)
@@ -184,10 +184,11 @@ def generate_predictions(config, dataset, model, ticker_data):
         ticker_data,
         predict_mode=True,
         max_prediction_length=config['model']['max_prediction_length'],
+        static_categoricals=["Sector"],  # Dodajemy Sector jako statyczną zmienną kategoryczną
         categorical_encoders={
-            'Sector': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=False),
-            'Day_of_Week': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=False),
-            'Month': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=False)
+            'Sector': NaNLabelEncoder(add_nan=False),
+            'Day_of_Week': NaNLabelEncoder(add_nan=False),
+            'Month': NaNLabelEncoder(add_nan=False)
         }
     ).to_dataloader(train=False, batch_size=config['prediction']['batch_size'], num_workers=4)
 
