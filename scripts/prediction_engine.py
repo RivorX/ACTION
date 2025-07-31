@@ -19,13 +19,6 @@ from scripts.config_manager import ConfigManager
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Lista wszystkich możliwych sektorów
-ALL_SECTORS = [
-    'Technology', 'Healthcare', 'Financials', 'Consumer Discretionary', 'Consumer Staples',
-    'Energy', 'Utilities', 'Industrials', 'Materials', 'Communication Services',
-    'Real Estate', 'Unknown'
-]
-
 async def load_data_and_model_async(config, ticker, temp_raw_data_path, historical_mode=False, trim_days=0, years=3):
     """Asynchroniczna wersja load_data_and_model."""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -137,7 +130,8 @@ def preprocess_data(config, ticker_data, ticker, normalizers, historical_mode=Fa
                                                categories=[str(i) for i in range(7)], 
                                                ordered=False)
     
-    ticker_data['Sector'] = pd.Categorical(ticker_data['Sector'], categories=ALL_SECTORS, ordered=False)
+    config_manager = ConfigManager()
+    ticker_data['Sector'] = pd.Categorical(ticker_data['Sector'], categories=config_manager.get_sectors(), ordered=False)
     
     log_features = [
         "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "ATR", "BB_width",
@@ -184,7 +178,7 @@ def generate_predictions(config, dataset, model, ticker_data):
         ticker_data,
         predict_mode=True,
         max_prediction_length=config['model']['max_prediction_length'],
-        static_categoricals=["Sector"],  # Dodajemy Sector jako statyczną zmienną kategoryczną
+        static_categoricals=["Sector"], 
         categorical_encoders={
             'Sector': NaNLabelEncoder(add_nan=False),
             'Day_of_Week': NaNLabelEncoder(add_nan=False),
@@ -192,7 +186,6 @@ def generate_predictions(config, dataset, model, ticker_data):
         }
     ).to_dataloader(train=False, batch_size=config['prediction']['batch_size'], num_workers=4)
 
-    # Użycie float32 w autocast
     with torch.no_grad(), torch.amp.autocast(device_type='cuda' if torch.cuda.is_available() else 'cpu', dtype=torch.float32):
         predictions = model.predict(ticker_dataset, mode="quantiles", return_x=True)
     elapsed_time = time.time() - start_time

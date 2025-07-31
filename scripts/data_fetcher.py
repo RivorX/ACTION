@@ -5,20 +5,13 @@ import pandas as pd
 from datetime import datetime, timedelta
 import logging
 from pathlib import Path
-from .config_manager import ConfigManager
+from scripts.config_manager import ConfigManager
 import yaml
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
-# Lista wszystkich możliwych sektorów, w tym Unknown
-ALL_SECTORS = [
-    'Technology', 'Healthcare', 'Financials', 'Consumer Discretionary', 'Consumer Staples',
-    'Energy', 'Utilities', 'Industrials', 'Materials', 'Communication Services',
-    'Real Estate', 'Unknown'
-]
 
 class DataFetcher:
     def __init__(self, config_manager: ConfigManager, years: int):
@@ -31,6 +24,8 @@ class DataFetcher:
         """
         self.config = config_manager.config
         self.years = years
+        self.config_manager = config_manager
+        self.sectors = config_manager.get_sectors()
         try:
             self.tickers_file = Path(self.config['data']['tickers_file'])
             self.raw_data_path = Path(self.config['data']['raw_data_path'])
@@ -109,9 +104,9 @@ class DataFetcher:
                                     'Close': 'Close', 'Volume': 'Volume'})
             df['Ticker'] = ticker
 
-            # Dodanie sektora z listy ALL_SECTORS
+            # Dodanie sektora z listy sektorów z ConfigManager
             sector = info.get('sector', 'Unknown')
-            if sector not in ALL_SECTORS:
+            if sector not in self.sectors:
                 sector = 'Unknown'
             df['Sector'] = sector
             logger.info(f"Przypisano sektor dla {ticker}: {sector}")
@@ -180,7 +175,7 @@ class DataFetcher:
         df = pd.concat(all_data, ignore_index=True) if all_data else pd.DataFrame()
         if not df.empty:
             # Upewnij się, że kolumna Sector jest kategoryczna z pełnym zestawem kategorii
-            df['Sector'] = pd.Categorical(df['Sector'], categories=ALL_SECTORS, ordered=False)
+            df['Sector'] = pd.Categorical(df['Sector'], categories=self.sectors, ordered=False)
             df.to_csv(self.raw_data_path, index=False)
             logger.info(f"Dane zapisane do {self.raw_data_path}")
         else:

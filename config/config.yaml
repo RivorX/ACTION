@@ -2,7 +2,7 @@
 # Ten plik zawiera ustawienia dla modelu Temporal Fusion Transformer
 
 # Nazwa modelu
-model_name: Gen_4_2_mini
+model_name: Gen4_3_mini
 
 # Ustawienia modelu
 model:
@@ -17,6 +17,11 @@ model:
   loss: QuantileLoss         # Funkcja straty
   use_quantile_loss: true    # Włączenie straty kwantylowej
   quantiles: [0.1, 0.5, 0.9] # Kwantyle dla predykcji
+  # Wagi czasowe
+  weight_start: 1.0
+  weight_end: 1.5
+  # Waga dla directional accuracy
+  directional_weight: 0.3
   # Zakresy hiperparametrów dla Optuna
   min_hidden_size: 64
   max_hidden_size: 128
@@ -24,6 +29,19 @@ model:
   max_lstm_layers: 2
   min_attention_head_size: 2
   max_attention_head_size: 4
+  sectors:
+    - Technology
+    - Healthcare
+    - Financials
+    - Consumer Discretionary
+    - Consumer Staples
+    - Energy
+    - Utilities
+    - Industrials
+    - Materials
+    - Communication Services
+    - Real Estate
+    - Unknown
 
 # Ustawienia treningu
 training:

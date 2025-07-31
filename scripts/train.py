@@ -1,9 +1,8 @@
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
+from pytorch_lightning.callbacks import EarlyStopping
 from pytorch_lightning.loggers import CSVLogger
 import torch
 from pytorch_forecasting import TimeSeriesDataSet, NaNLabelEncoder
-import pytorch_forecasting
 from scripts.data_fetcher import DataFetcher
 from scripts.preprocessor import DataPreprocessor
 from scripts.model import build_model, CustomTemporalFusionTransformer
@@ -18,13 +17,6 @@ from pathlib import Path
 # Konfiguracja logowania
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
-# Lista wszystkich możliwych sektorów
-ALL_SECTORS = [
-    'Technology', 'Healthcare', 'Financials', 'Consumer Discretionary', 'Consumer Staples',
-    'Energy', 'Utilities', 'Industrials', 'Materials', 'Communication Services',
-    'Real Estate', 'Unknown'
-]
 
 class CustomModelCheckpoint(pl.callbacks.Callback):
     """Niestandardowy callback do zapisywania checkpointów."""
@@ -58,8 +50,8 @@ def objective(trial, train_dataset: TimeSeriesDataSet, val_dataset: TimeSeriesDa
         devices=1,
         precision="16-mixed" if torch.cuda.is_available() else "32-true",
         callbacks=[
-            EarlyStopping(monitor="val_loss", patience=config['training']['early_stopping_patience']),
-            CustomModelCheckpoint(monitor="val_loss", save_path=config['paths']['model_save_path'], mode="min")
+            EarlyStopping(monitor="val_combined_metric", patience=config['training']['early_stopping_patience'], mode="min"),
+            CustomModelCheckpoint(monitor="val_combined_metric", save_path=config['paths']['model_save_path'], mode="min")
         ],
         enable_progress_bar=True,
         logger=CSVLogger(save_dir="logs/")
@@ -77,12 +69,11 @@ def objective(trial, train_dataset: TimeSeriesDataSet, val_dataset: TimeSeriesDa
     trainer.fit(model, train_dataloaders=train_dataset.to_dataloader(
         train=True, batch_size=config['training']['batch_size'], num_workers=4, persistent_workers=True
     ), val_dataloaders=val_dataloader)
-    return trainer.callback_metrics["val_loss"].item()
+    return trainer.callback_metrics["val_combined_metric"].item()
 
 def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = True, continue_training: bool = False):
     logger.info("Rozpoczynanie treningu modelu...")
     
-    # Pobierz dane z raw_data_path i odfiltruj tylko wybrane tickery
     df = pd.read_csv(config['data']['raw_data_path'])
     selected_tickers = config['data']['tickers']
     df = df[df['Ticker'].isin(selected_tickers)]
@@ -97,18 +88,16 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
     df['time_idx'] = (df['Date'] - df['Date'].min()).dt.days.astype(int)
     df['group_id'] = df['Ticker']
     
-    # Upewnij się, że Sector i Day_of_Week są kategoryczne
-    df['Sector'] = pd.Categorical(df['Sector'], categories=ALL_SECTORS, ordered=False)
+    config_manager = ConfigManager()
+    df['Sector'] = pd.Categorical(df['Sector'], categories=config_manager.get_sectors(), ordered=False)
     df['Day_of_Week'] = pd.Categorical(df['Day_of_Week'], categories=[str(i) for i in range(7)], ordered=False)
     logger.info(f"Kategorie sektorów w train.py: {df['Sector'].cat.categories.tolist()}")
     logger.info(f"Kategorie dni tygodnia w train.py: {df['Day_of_Week'].cat.categories.tolist()}")
     
-    # Wczytaj normalizery
     with open(config['data']['normalizers_path'], 'rb') as f:
         normalizers = pickle.load(f)
     logger.info(f"Wczytano normalizery z: {config['data']['normalizers_path']}")
     
-    # Transformacja logarytmiczna
     log_features = [
         "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "ATR", "BB_width",
         "Tenkan_sen", "Kijun_sen", "Senkou_Span_A", "Senkou_Span_B", "VWAP"
@@ -118,7 +107,6 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
         if feature in df.columns:
             df[feature] = np.log1p(df[feature].clip(lower=0))
     
-    # Normalizacja z sprawdzeniem dostępności cech
     numeric_features = [
         "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI",
         "MACD", "MACD_Signal", "MACD_Histogram", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
@@ -131,7 +119,7 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
         if feature in df.columns and feature in normalizers:
             try:
                 df[feature] = normalizers[feature].transform(df[feature].values)
-                if df[feature].isna().any() or np.isinf(df[feature].any()):
+                if df[feature].isna().any() or np.isinf(df[feature]).any():
                     logger.error(f"Transformacja cechy {feature} spowodowała NaN lub inf")
             except Exception as e:
                 logger.error(f"Błąd transformacji cechy {feature}: {e}")
@@ -152,7 +140,6 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
                 df[cat_col] = pd.Categorical(df[cat_col], categories=[str(i) for i in range(7)], ordered=False)
             df[cat_col] = df[cat_col].astype(str)
 
-    # Filtracja grup z wystarczającą liczbą rekordów
     min_val_records = config['model'].get('min_prediction_length', 1) + config['model'].get('min_encoder_length', 1)
     group_counts = df.groupby('group_id').size().reset_index(name='count')
     
@@ -167,7 +154,6 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
 
     logger.info(f"max_time_idx: {df['time_idx'].max()}, split_idx: {int(df['time_idx'].max() * 0.8)}")
 
-    # Tworzenie datasetów treningowego i walidacyjnego
     train_dataset = TimeSeriesDataSet.from_parameters(
         dataset.get_parameters(),
         train_df,
@@ -192,11 +178,9 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
     if len(val_dataset) == 0 or len(train_dataset) == 0:
         raise ValueError(f"Zbiory danych są puste: train_dataset={len(train_dataset)}, val_dataset={len(val_dataset)}")
 
-    # Ustal urządzenie
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logger.info(f"Używane urządzenie: {device}")
 
-    # Optymalizacja z Optuna
     if use_optuna and not continue_training:
         study = optuna.create_study(direction="minimize")
         study.optimize(lambda trial: objective(trial, train_dataset, val_dataset, config), n_trials=config['training']['optuna_trials'])
@@ -206,7 +190,6 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
         best_params = None
         logger.info("Pomijanie optymalizacji Optuna, używanie domyślnych hiperparametrów.")
 
-    # Wczytywanie modelu
     model_save_path = Path(config['paths']['model_save_path'])
     logger.info(f"Ścieżka do modelu: {model_save_path}, istnieje: {model_save_path.exists()}")
     if continue_training and model_save_path.exists():
@@ -232,8 +215,8 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
         devices=1,
         precision="16-mixed" if torch.cuda.is_available() else "32-true",
         callbacks=[
-            EarlyStopping(monitor="val_loss", patience=config['training']['early_stopping_patience']),
-            CustomModelCheckpoint(monitor="val_loss", save_path=config['paths']['model_save_path'], mode="min")
+            EarlyStopping(monitor="val_combined_metric", patience=config['training']['early_stopping_patience'], mode="min"),
+            CustomModelCheckpoint(monitor="val_combined_metric", save_path=config['paths']['model_save_path'], mode="min")
         ],
         enable_progress_bar=True,
         logger=CSVLogger(save_dir="logs/")
@@ -248,7 +231,6 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
         )
     )
     
-    # Zapisz model
     checkpoint = {
         "state_dict": final_model.state_dict(),
         "hyperparams": dict(final_model.hparams)

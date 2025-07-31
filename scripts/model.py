@@ -26,12 +26,22 @@ def move_to_device(obj: Any, device: torch.device) -> Any:
         return type(obj)(move_to_device(item, device) for item in obj)
     return obj
 
+def sanitize_tensor(tensor: torch.Tensor, fill_value: float = 0.0) -> torch.Tensor:
+    """Usuwa NaN i Inf z tensora, zastępując je fill_value."""
+    if torch.isnan(tensor).any() or torch.isinf(tensor).any():
+        logger.warning("Wykryto NaN lub Inf w tensorze, zastępuję wartościami 0.0")
+        return torch.nan_to_num(tensor, nan=fill_value, posinf=fill_value, neginf=fill_value)
+    return tensor
+
 class ModelConfig:
     """Klasa zarządzająca konfiguracją modelu."""
     def __init__(self, config: Dict[str, Any]):
         self.config = config
-        self.use_quantile_loss = config['model'].get('use_quantile_loss', False)
-        self.quantiles = config['model'].get('quantiles', [0.1, 0.5, 0.9]) if self.use_quantile_loss else None
+        self.use_quantile_loss = config['model']['use_quantile_loss']
+        self.quantiles = config['model']['quantiles'] if self.use_quantile_loss else None
+        self.weight_start = config['model']['weight_start']
+        self.weight_end = config['model']['weight_end']
+        self.directional_weight = config['model']['directional_weight']
         self.embedding_sizes = {
             'Sector': (12, 5),  # 12 kategorii, wymiar osadzenia 5
             'Day_of_Week': (7, 5),  # 7 kategorii, wymiar osadzenia 5
@@ -52,7 +62,10 @@ class ModelConfig:
             "log_interval": 10,
             "reduce_on_plateau_patience": self.config['training']['early_stopping_patience'],
             "learning_rate": self.config['model']['learning_rate'],
-            "embedding_sizes": self.embedding_sizes
+            "embedding_sizes": self.embedding_sizes,
+            "weight_start": self.weight_start,
+            "weight_end": self.weight_end,
+            "directional_weight": self.directional_weight
         }
 
     def get_filtered_params(self, hyperparams: Dict[str, Any]) -> Dict[str, Any]:
@@ -80,7 +93,10 @@ class HyperparamFactory:
             "loss": QuantileLoss(quantiles=config.quantiles) if config.use_quantile_loss else MAE(),
             "log_interval": 10,
             "reduce_on_plateau_patience": config.config['training']['early_stopping_patience'],
-            "embedding_sizes": config.embedding_sizes
+            "embedding_sizes": config.embedding_sizes,
+            "weight_start": trial.suggest_float("weight_start", 1.0, 1.2),
+            "weight_end": trial.suggest_float("weight_end", 1.3, 2.0),
+            "directional_weight": trial.suggest_float("directional_weight", 0.1, 0.5)
         }
 
     @staticmethod
@@ -89,7 +105,8 @@ class HyperparamFactory:
         required_keys = [
             "hidden_size", "learning_rate", "attention_head_size", "dropout",
             "lstm_layers", "hidden_continuous_size", "output_size",
-            "log_interval", "reduce_on_plateau_patience", "embedding_sizes"
+            "log_interval", "reduce_on_plateau_patience", "embedding_sizes",
+            "weight_start", "weight_end", "directional_weight"
         ]
         filtered_hyperparams = {}
         for key in required_keys:
@@ -107,7 +124,10 @@ class CustomTemporalFusionTransformer(LightningModule):
         self.model_config = ModelConfig(config)
         self.hyperparams = hyperparams if hyperparams else self.model_config.default_hyperparams
         self.normalizers_path = Path(config['data']['normalizers_path'])
-        self.dataset = dataset  # Przechowuj dataset, aby uzyskać dostęp do target_normalizer
+        self.dataset = dataset
+        self.val_batch_count = 0
+        self.max_val_batches_to_log = 3  # Ograniczenie logowania do 3 batchy
+        self.validation_outputs = []  
         self._load_normalizers()
         self._initialize_model(dataset)
         self._save_hyperparameters()
@@ -129,8 +149,8 @@ class CustomTemporalFusionTransformer(LightningModule):
         self.model = TemporalFusionTransformer.from_dataset(dataset, **filtered_params)
 
     def _save_hyperparameters(self):
-        """Zapisuje hiperparametry, ignorując 'loss' i dodając informacje o quantile."""
-        hparams_to_save = {k: v for k, v in self.hyperparams.items() if k != 'loss'}
+        """Zapisuje hiperparametry, ignorując 'loss' i 'logging_metrics'."""
+        hparams_to_save = {k: v for k, v in self.hyperparams.items() if k not in ['loss', 'logging_metrics']}
         hparams_to_save.update({
             'quantiles': self.model_config.quantiles,
             'use_quantile_loss': self.model_config.use_quantile_loss
@@ -144,7 +164,6 @@ class CustomTemporalFusionTransformer(LightningModule):
     def forward(self, x: Dict[str, torch.Tensor]) -> torch.Tensor:
         x = move_to_device(x, self.device)
         output = self.model(x)
-        # Jeśli to tuple/lista, zwróć pierwszy element (predykcje)
         if isinstance(output, (tuple, list)):
             return output[0]
         return output
@@ -158,37 +177,23 @@ class CustomTemporalFusionTransformer(LightningModule):
     def interpret_output(self, x: Dict[str, torch.Tensor], **kwargs) -> Dict[str, Any]:
         """Deleguje interpretację wyjścia do wewnętrznego modelu TFT."""
         x = move_to_device(x, self.device)
-        
-        # Najpierw sprawdź, czy model ma wszystkie wymagane komponenty
         try:
-            # Wywołaj model w trybie interpretacji - to zwraca pełne dane
             self.model.eval()
             with torch.no_grad():
-                # Wywołaj model bezpośrednio, aby uzyskać pełne dane wyjściowe
                 full_output = self.model(x)
-                
-                # Sprawdź, czy full_output ma wymagane klucze
                 if isinstance(full_output, dict):
                     logger.info(f"Model zwrócił następujące klucze: {list(full_output.keys())}")
                     return self.model.interpret_output(full_output, **kwargs)
                 else:
-                    # Jeśli model zwraca tensor, musimy go przekonwertować na format słownikowy
                     logger.info("Model zwrócił tensor, konwertuję na format słownikowy")
-                    
-                    # Przygotuj pełne dane wyjściowe poprzez wywołanie _forward_full
                     if hasattr(self.model, '_forward_full'):
                         full_output = self.model._forward_full(x)
                     else:
-                        # Wywołaj model bezpośrednio w trybie pełnym
                         full_output = self.model.forward(x)
-                    
                     return self.model.interpret_output(full_output, **kwargs)
-                    
         except Exception as e:
             logger.error(f"Błąd w interpret_output: {e}")
-            # Spróbuj alternatywnego podejścia
             try:
-                # Wywołaj model w trybie treningowym, aby uzyskać pełne dane
                 self.model.train()
                 full_output = self.model(x)
                 self.model.eval()
@@ -205,47 +210,49 @@ class CustomTemporalFusionTransformer(LightningModule):
         if stage == 'train' and not y_target.requires_grad:
             y_target.requires_grad_(True)
         
-        if torch.isnan(y_target).any() or torch.isinf(y_target).any():
-            logger.warning(f"NaN/Inf w y_target w batch {batch_idx}")
-            y_target = torch.nan_to_num(y_target, nan=0.0, posinf=0.0, neginf=0.0)
+        y_target = sanitize_tensor(y_target)
         
         try:
             with torch.amp.autocast(device_type='cuda' if torch.cuda.is_available() else 'cpu', dtype=torch.bfloat16):
                 y_hat = self(x)
+                y_hat = sanitize_tensor(y_hat)
+
+                quantile_loss = self.model.loss(y_hat, y_target)
+                y_hat_median = y_hat[:, :, 1] if y_hat.dim() == 3 else y_hat
+                direction_pred = torch.sign(y_hat_median)
+                direction_true = torch.sign(y_target)
+                directional_accuracy = (direction_pred == direction_true).float().mean() * 100
                 
-                if torch.isnan(y_hat).any() or torch.isinf(y_hat).any():
-                    logger.warning(f"NaN/Inf w y_hat w batch {batch_idx}")
-                    y_hat = torch.nan_to_num(y_hat, nan=0.0, posinf=0.0, neginf=0.0)
+                directional_weight = self.hyperparams.get('directional_weight', self.model_config.directional_weight)
+                total_loss = (1.0 - directional_weight) * quantile_loss + directional_weight * (1.0 - directional_accuracy / 100)
                 
-                # Obliczanie straty
-                loss = self.model.loss(y_hat, y_target)
+                # Obliczanie val_combined_metric
+                combined_metric = 0.7 * quantile_loss + 0.3 * (1.0 - directional_accuracy / 100)
                 
-                # Obliczanie dodatkowych metryk tylko dla walidacji
+                prediction_length = y_hat.shape[1]
+                weight_start = self.hyperparams.get('weight_start', self.model_config.weight_start)
+                weight_end = self.hyperparams.get('weight_end', self.model_config.weight_end)
+                weights = torch.linspace(weight_start, weight_end, steps=prediction_length, device=self.device).view(1, -1, 1)
+                weights = weights.expand_as(y_hat)
+                weighted_loss = (total_loss * weights).mean()
+                
                 if stage == 'val':
-                    # Wybierz medianę dla metryk (indeks 1 dla kwantyli [0.1, 0.5, 0.9])
-                    y_hat_median = y_hat[:, :, 1] if y_hat.dim() == 3 else y_hat
-                    
-                    # MAPE
                     mape = torch.mean(torch.abs((y_target - y_hat_median) / (y_target + 1e-10))) * 100
                     self.log(f"{stage}_mape", mape, on_step=False, on_epoch=True, prog_bar=True, batch_size=x['encoder_cont'].size(0))
-                    
-                    # Directional Accuracy
-                    direction_pred = torch.sign(y_hat_median)
-                    direction_true = torch.sign(y_target)
-                    directional_accuracy = (direction_pred == direction_true).float().mean() * 100
                     self.log(f"{stage}_directional_accuracy", directional_accuracy, on_step=False, on_epoch=True, prog_bar=True, batch_size=x['encoder_cont'].size(0))
+                    self.log(f"{stage}_combined_metric", combined_metric, on_step=True, on_epoch=True, prog_bar=True, batch_size=x['encoder_cont'].size(0))
                 
-                if not torch.isfinite(loss):
-                    logger.warning(f"Loss nie jest skończony w batch {batch_idx}: {loss}")
-                    loss = torch.tensor(1e-6, device=self.device, requires_grad=True)
+                if not torch.isfinite(weighted_loss):
+                    logger.warning(f"Weighted loss nie jest skończony w batch {batch_idx}: {weighted_loss}")
+                    weighted_loss = torch.tensor(1e-6, device=self.device, requires_grad=True)
                 
         except Exception as e:
             logger.error(f"Błąd podczas forward pass w batch {batch_idx}: {e}")
-            loss = torch.tensor(1e-6, device=self.device, requires_grad=True)
+            weighted_loss = torch.tensor(1e-6, device=self.device, requires_grad=True)
             y_hat = torch.zeros_like(y_target, requires_grad=True)
         
         batch_size = x['encoder_cont'].size(0)
-        self.log(f"{stage}_loss", loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=batch_size)
+        self.log(f"{stage}_loss", weighted_loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=batch_size)
         
         try:
             l2_norm = sum(p.pow(2).sum() for p in self.parameters() if p.requires_grad).sqrt().item()
@@ -253,31 +260,36 @@ class CustomTemporalFusionTransformer(LightningModule):
         except Exception as e:
             logger.warning(f"Nie można obliczyć l2_norm: {e}")
         
-        if stage == 'val' and batch_idx % 50 == 0:
+        if stage == 'val' and self.val_batch_count < self.max_val_batches_to_log:
             try:
                 self._log_validation_details(x, y_hat, y_target, batch_idx)
+                self.val_batch_count += 1
             except Exception as e:
                 logger.error(f"Błąd w logowaniu szczegółów walidacji: {e}")
         
-        return loss
+        if stage == 'val':
+            return {
+                'val_loss': weighted_loss,
+                'val_l2_norm': torch.tensor(l2_norm, device=self.device),
+                'val_directional_accuracy': directional_accuracy,
+                'val_mape': mape,
+                'val_combined_metric': combined_metric
+            }
+        return weighted_loss
 
     def _log_validation_details(self, x, y_hat, y_target, batch_idx):
         """Wydzielona funkcja do logowania szczegółów walidacji."""
-        # Denormalizacja y_hat i y_target (Relative Returns)
         relative_returns_normalizer = self.normalizers.get('Relative_Returns') or self.dataset.target_normalizer
         if relative_returns_normalizer:
             try:
-                # Przeniesienie na CPU i konwersja na float32 przed denormalizacją
                 y_hat_denorm = relative_returns_normalizer.inverse_transform(y_hat.float().cpu())
                 y_target_denorm = relative_returns_normalizer.inverse_transform(y_target.float().cpu())
                 
-                # KONWERSJA RELATIVE RETURNS NA RZECZYWISTE CENY
                 if 'encoder_cont' in x:
-                    encoder_cont = x['encoder_cont'][0].cpu()  # Pierwszy przykład z batcha
+                    encoder_cont = x['encoder_cont'][0].cpu()
                     close_normalizer = self.normalizers.get('Close')
                     if close_normalizer is not None:
                         try:
-                            # Znajdź pozycję Close w numeric_features
                             numeric_features = [
                                 "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI", "Volatility",
                                 "MACD", "MACD_Signal", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
@@ -287,12 +299,10 @@ class CustomTemporalFusionTransformer(LightningModule):
                             close_idx = numeric_features.index("Close") if "Close" in numeric_features else None
                             
                             if close_idx is not None:
-                                # Pobierz ostatnią wartość Close z encodera
                                 last_close_norm = encoder_cont[-1, close_idx]
                                 last_close_denorm = close_normalizer.inverse_transform(torch.tensor([[last_close_norm]]))
                                 last_close_price = np.expm1(last_close_denorm.numpy())[0, 0]
                                 
-                                # Sprawdź rozsądność ceny
                                 if last_close_price > 10000:
                                     logger.warning(f"Bardzo wysoka cena Close: {last_close_price:.2f}")
                                     last_close_price_alt = last_close_denorm.numpy()[0, 0]
@@ -300,8 +310,6 @@ class CustomTemporalFusionTransformer(LightningModule):
                                         last_close_price = last_close_price_alt
                                 
                                 logger.info(f"Ostatnia cena Close z batcha: {last_close_price:.2f}")
-                                
-                                # Konwertuj tylko pierwsze 5 predykcji dla czytelności
                                 self._convert_to_prices(y_hat_denorm, y_target_denorm, last_close_price, batch_idx)
                             else:
                                 logger.warning("Nie można znaleźć indeksu kolumny Close")
@@ -311,7 +319,6 @@ class CustomTemporalFusionTransformer(LightningModule):
                         logger.warning("Brak normalizera dla Close")
                 else:
                     logger.warning("Brak danych encoder_cont w batchu")
-                    
             except Exception as e:
                 logger.error(f"Błąd podczas denormalizacji Relative Returns: {e}")
         else:
@@ -344,7 +351,6 @@ class CustomTemporalFusionTransformer(LightningModule):
                 relative_return_pred_lower = relative_return_pred
                 relative_return_pred_upper = relative_return_pred
             
-            # Oblicz ceny
             next_price_pred = current_price_pred * (1 + relative_return_pred)
             next_price_pred_lower = current_price_pred * (1 + relative_return_pred_lower)
             next_price_pred_upper = current_price_pred * (1 + relative_return_pred_upper)
@@ -356,13 +362,11 @@ class CustomTemporalFusionTransformer(LightningModule):
             })
             current_price_pred = next_price_pred
             
-            # Dla wartości rzeczywistych
             relative_return_target = to_scalar(y_target_denorm[0, i])
             next_price_target = current_price_target * (1 + relative_return_target)
             y_target_prices.append(next_price_target)
             current_price_target = next_price_target
         
-        # Formatowanie wyników
         pred_medians = [f"{p['median']:.2f}" for p in y_hat_prices]
         pred_lowers = [f"{p['lower']:.2f}" for p in y_hat_prices]
         pred_uppers = [f"{p['upper']:.2f}" for p in y_hat_prices]
@@ -379,41 +383,46 @@ class CustomTemporalFusionTransformer(LightningModule):
     def training_step(self, batch: Tuple[Dict[str, torch.Tensor], List[torch.Tensor]], batch_idx: int) -> torch.Tensor:
         return self._shared_step(batch, batch_idx, 'train')
 
-    def validation_step(self, batch: Tuple[Dict[str, torch.Tensor], List[torch.Tensor]], batch_idx: int) -> torch.Tensor:
-        return self._shared_step(batch, batch_idx, 'val')
+    def validation_step(self, batch: Tuple[Dict[str, torch.Tensor], List[torch.Tensor]], batch_idx: int) -> None:
+        output = self._shared_step(batch, batch_idx, 'val')
+        self.validation_outputs.append(output)
 
     def on_validation_epoch_end(self) -> None:
-        """Loguje val_l2_norm i learning_rate na końcu każdej epoki walidacyjnej."""
-        # Pobierz średnią val_l2_norm z epoki
-        val_l2_norm = self.trainer.callback_metrics.get("val_l2_norm", None)
-        if val_l2_norm is not None:
-            logger.info(f"Validation epoch end: val_l2_norm = {val_l2_norm:.4f}")
+        """Loguje średnie metryki na końcu każdej epoki walidacyjnej."""
+        if self.validation_outputs:
+            avg_loss = torch.stack([x['val_loss'] for x in self.validation_outputs]).mean()
+            avg_l2_norm = torch.stack([x['val_l2_norm'] for x in self.validation_outputs]).mean()
+            avg_directional_accuracy = torch.stack([x['val_directional_accuracy'] for x in self.validation_outputs]).mean()
+            avg_mape = torch.stack([x['val_mape'] for x in self.validation_outputs]).mean()
+            avg_combined_metric = torch.stack([x['val_combined_metric'] for x in self.validation_outputs]).mean()
+            self.log('val_loss_epoch', avg_loss, prog_bar=True)
+            self.log('val_l2_norm_epoch', avg_l2_norm)
+            self.log('val_directional_accuracy_epoch', avg_directional_accuracy, prog_bar=True)
+            self.log('val_mape_epoch', avg_mape, prog_bar=True)
+            self.log('val_combined_metric_epoch', avg_combined_metric, prog_bar=True)
+            logger.info(f"Validation epoch end: val_l2_norm = {avg_l2_norm:.4f}")
+            logger.info(f"Validation epoch end: val_combined_metric = {avg_combined_metric:.4f}")
+            logger.info(f"Validation epoch end: learning_rate = {self.optimizers().param_groups[0]['lr']:.6f}")
         else:
-            logger.warning("val_l2_norm nie jest dostępne w callback_metrics")
-
-        # Pobierz aktualny learning rate z optymalizatora
-        optimizer = self.optimizers()
-        if optimizer is not None:
-            current_lr = optimizer.param_groups[0]['lr']
-            logger.info(f"Validation epoch end: learning_rate = {current_lr:.6f}")
-        else:
-            logger.warning("Optimizer nie jest dostępny, brak learning_rate")
+            logger.warning("Brak wyników walidacji w validation_outputs")
+        self.validation_outputs.clear()  # Czyszczenie wyników po epoce
+        self.val_batch_count = 0  # Resetowanie licznika po epoce
 
     def configure_optimizers(self) -> Dict[str, Any]:
         """Konfiguruje optymalizator i scheduler."""
         learning_rate = self.hyperparams.get('learning_rate', self.model_config.config['model']['learning_rate'])
-        optimizer = torch.optim.AdamW(self.parameters(), lr=learning_rate, weight_decay=0.1)
+        optimizer = torch.optim.AdamW(self.parameters(), lr=learning_rate, weight_decay=0.15)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer,
+            mode='min',
             patience=self.model_config.config['training']['reduce_lr_patience'],
-            factor=self.model_config.config['training']['reduce_lr_factor'],
-            mode='min'
+            factor=self.model_config.config['training']['reduce_lr_factor']
         )
         return {
             "optimizer": optimizer,
             "lr_scheduler": {
                 "scheduler": scheduler,
-                "monitor": "val_loss",
+                "monitor": "val_combined_metric",
             },
         }
 

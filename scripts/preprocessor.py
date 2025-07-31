@@ -7,17 +7,11 @@ import torch
 import pickle
 import logging
 from pathlib import Path
+from scripts.config_manager import ConfigManager
 
 # Konfiguracja logowania
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
-# Lista wszystkich możliwych sektorów
-ALL_SECTORS = [
-    'Technology', 'Healthcare', 'Financials', 'Consumer Discretionary', 'Consumer Staples',
-    'Energy', 'Utilities', 'Industrials', 'Materials', 'Communication Services',
-    'Real Estate', 'Unknown'
-]
 
 class FeatureEngineer:
     """Klasa do inżynierii cech dla danych giełdowych."""
@@ -206,7 +200,8 @@ class FeatureEngineer:
         logger.info(f"Długość danych po dropna kluczowych kolumn: {len(df)}")
 
         # Upewnij się, że Sector jest kategoryczny
-        df['Sector'] = pd.Categorical(df['Sector'], categories=ALL_SECTORS, ordered=False)
+        config_manager = ConfigManager()
+        df['Sector'] = pd.Categorical(df['Sector'], categories=config_manager.get_sectors(), ordered=False)
         logger.info(f"Kategorie sektorów: {df['Sector'].cat.categories.tolist()}")
 
         # Logowanie brakujących danych w innych kolumnach
@@ -225,6 +220,7 @@ class DataPreprocessor:
         self.normalizers_path = Path(config['data']['normalizers_path'])
         self.processed_data_path = Path(config['data']['processed_data_path'])
         self.day_of_week_categories = [str(i) for i in range(7)]
+        self.config_manager = ConfigManager()
 
     def preprocess_data(self, df: pd.DataFrame) -> TimeSeriesDataSet:
         if df.empty:
@@ -242,7 +238,7 @@ class DataPreprocessor:
         df['Day_of_Week'] = df['Date'].dt.dayofweek.astype(str)
         df['Day_of_Week'] = pd.Categorical(df['Day_of_Week'], categories=self.day_of_week_categories, ordered=False)
 
-        df['Sector'] = pd.Categorical(df['Sector'], categories=ALL_SECTORS, ordered=False)
+        df['Sector'] = pd.Categorical(df['Sector'], categories=self.config_manager.get_sectors(), ordered=False)
         logger.info(f"Kategorie sektorów w preprocess_data: {df['Sector'].cat.categories.tolist()}")
 
         numeric_features = [
@@ -288,13 +284,11 @@ class DataPreprocessor:
                                 valid_numeric_features.remove(feature)
                         else:
                             logger.info(f"Normalizacja cechy {feature} zakończona pomyślnie: min={df[feature].min():.6f}, max={df[feature].max():.6f}")
-                            
+                            valid_numeric_features.append(feature)
                     except Exception as e:
                         logger.error(f"Błąd podczas normalizacji cechy {feature}: {e}")
                         if feature in valid_numeric_features:
                             valid_numeric_features.remove(feature)
-                if feature not in valid_numeric_features:
-                    valid_numeric_features.append(feature)
 
         with open(self.normalizers_path, 'wb') as f:
             pickle.dump(normalizers, f)
@@ -306,7 +300,7 @@ class DataPreprocessor:
         valid_categorical_features = [f for f in categorical_features if f in df.columns]
         
         logger.info(f"Kategorie dla Day_of_Week: {self.day_of_week_categories}")
-        logger.info(f"Kategorie dla Sector: {ALL_SECTORS}")
+        logger.info(f"Kategorie dla Sector: {self.config_manager.get_sectors()}")
 
         logger.info(f"Finalna lista cech numerycznych ({len(valid_numeric_features)}): {valid_numeric_features}")
         logger.info(f"Finalna lista cech kategorycznych ({len(valid_categorical_features)}): {valid_categorical_features}")

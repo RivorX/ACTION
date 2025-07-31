@@ -59,3 +59,11 @@ class ConfigManager:
         except (KeyError, TypeError):
             logger.warning(f"Klucz {key} nie znaleziony w konfiguracji, zwracam {default}")
             return default
+
+    def get_sectors(self) -> list:
+        """Zwraca listę sektorów z konfiguracji."""
+        return self.get('model.sectors', [
+            'Technology', 'Healthcare', 'Financials', 'Consumer Discretionary', 'Consumer Staples',
+            'Energy', 'Utilities', 'Industrials', 'Materials', 'Communication Services',
+            'Real Estate', 'Unknown'
+        ])
