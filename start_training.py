@@ -48,7 +48,7 @@ async def start_training(regions: str = 'global', years: int = 3, use_optuna: bo
             with open(config['data']['tickers_file'], 'r') as f:
                 tickers_config = yaml.safe_load(f)
             for region in tickers_config['tickers']:
-                all_tickers.extend(tickers_config['tickers'][region])
+                all_tickers.extend([item['ticker'] for item in tickers_config['tickers'][region]])
         else:
             for region in selected_regions:
                 tickers = fetcher._load_tickers(region)

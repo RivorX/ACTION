@@ -55,8 +55,8 @@ class DataFetcher:
             with open(self.tickers_file, 'r') as f:
                 tickers_config = yaml.safe_load(f)
                 if region and region in tickers_config['tickers']:
-                    return tickers_config['tickers'][region]
-                return [ticker for region_tickers in tickers_config['tickers'].values() for ticker in region_tickers]
+                    return [item['ticker'] for item in tickers_config['tickers'][region]]
+                return [item['ticker'] for region_tickers in tickers_config['tickers'].values() for item in region_tickers]
         except Exception as e:
             logger.error(f"Błąd wczytywania tickerów: {e}")
             return []

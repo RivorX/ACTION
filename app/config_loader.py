@@ -9,29 +9,18 @@ def load_config():
     return ConfigManager().config
 
 def load_tickers_and_names(config):
-    """Loads tickers and company names from configuration files."""
+    """Ładuje tickery i nazwy spółek z pliku YAML."""
     try:
-        tickers_file = config['data']['tickers_file']
-        company_names_file = config['data']['company_names_file']
-        
-        with open(tickers_file, 'r') as f:
+        with open(config['data']['tickers_file'], 'r') as f:
             tickers_config = yaml.safe_load(f)
-            all_tickers = []
-            for region in tickers_config['tickers'].values():
-                all_tickers.extend(region)
-            all_tickers = list(dict.fromkeys(all_tickers))
-
-        with open(company_names_file, 'r') as f:
-            company_names = yaml.safe_load(f)['company_names']
-        
-        ticker_options = {ticker: f"{ticker} - {company_names.get(ticker, 'Nieznana firma')}" for ticker in all_tickers}
-        return ticker_options
-    except KeyError as e:
-        logger.error(f"Missing key in config: {e}")
-        raise ValueError(f"Configuration error: missing key {e} in config.yaml")
+        ticker_dict = {}
+        for region in tickers_config['tickers']:
+            for item in tickers_config['tickers'][region]:
+                ticker_dict[item['ticker']] = item['name']
+        return ticker_dict
     except Exception as e:
-        logger.error(f"Error loading tickers or company names: {e}")
-        raise
+        logger.error(f"Błąd wczytywania tickerów i nazw: {e}")
+        return {}
 
 def load_benchmark_tickers(config):
     """Loads benchmark tickers from configuration file."""

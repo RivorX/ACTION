@@ -44,8 +44,7 @@ data:
   raw_data_path: data/stock_data.csv            # Ścieżka do surowych danych giełdowych
   processed_data_path: data/processed_dataset.pt # Ścieżka do przetworzonego datasetu
   normalizers_path: data/normalizers.pkl        # Ścieżka do zapisanych normalizerów
-  tickers_file: config/training_tickers.yaml    # Plik z tickerami giełdowymi
-  company_names_file: config/company_names.yaml # Plik z nazwami firm
+  tickers_file: config/tickers_with_names.yaml   # Plik z tickerami i nazwami spółek
   benchmark_tickers_file: config/benchmark_tickers.yaml # Plik z tickerami benchmarkowymi
 
 # Ścieżki do zapisu
