@@ -76,25 +76,28 @@ Dostępne są jedynie **aktualne wartości** tych wskaźników poprzez metodę `
 │   ├── app.py              # Aplikacja Streamlit
 │   ├── benchmark_utils.py  # Funkcje do generowania benchmarku
 │   ├── config_loader.py    # Wczytywanie konfiguracji i tickerów
-│   ├── plot_utils.py       # Funkcje do tworzenia wykresów
+│   └── plot_utils.py       # Funkcje do tworzenia wykresów
 ├── scripts/
 │   ├── config_manager.py   # Zarządzanie konfiguracją
 │   ├── data_fetcher.py     # Pobieranie danych giełdowych
-│   ├── feature_importance.py # Analiza ważności cech
 │   ├── model.py            # Definicja modelu
 │   ├── prediction_engine.py # Logika predykcji
 │   ├── preprocessor.py     # Przetwarzanie danych
 │   ├── train.py            # Trening modelu
+│   └── debug/              # Katalog z skryptami do debugowania
+│       ├── debug_dataset.py # Debugowanie datasetu
+│       ├── feature_importance.py # Analiza ważności cech
+│       └── transfer_weights.py # Przenoszenie wag między modelami
 ├── config/
 │   ├── config.yaml         # Plik konfiguracyjny
 │   ├── tickers.yaml        # Lista tickerów
 │   ├── benchmark_tickers.yaml # Tickery do benchmarku
-│   ├── company_names.yaml  # Nazwy spółek
+│   └── company_names.yaml  # Nazwy spółek
 ├── data/                   # Dane surowe i przetworzone
 ├── models/                 # Zapisane modele
 ├── start_training.py       # Skrypt do treningu modelu
 ├── README.md               # Dokumentacja projektu
-├── requirements.txt        # Lista zależności
+└── requirements.txt        # Lista zależności
 ```
 
 ---
