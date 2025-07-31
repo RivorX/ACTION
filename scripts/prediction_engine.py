@@ -74,7 +74,7 @@ async def load_data_and_model_async(config, ticker, temp_raw_data_path, historic
 
     try:
         model_name = config['model_name']
-        model_path = os.path.join(config['paths']['models_dir'], f"{model_name}_checkpoint.pth")
+        model_path = os.path.join(config['paths']['models_dir'], f"{model_name}.pth")
         if not os.path.exists(model_path):
             logger.error(f"Plik modelu {model_path} nie istnieje.")
             raise FileNotFoundError(f"Plik modelu {model_path} nie istnieje.")

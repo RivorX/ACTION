@@ -59,7 +59,7 @@ def objective(trial, train_dataset: TimeSeriesDataSet, val_dataset: TimeSeriesDa
         precision="16-mixed" if torch.cuda.is_available() else "32-true",
         callbacks=[
             EarlyStopping(monitor="val_loss", patience=config['training']['early_stopping_patience']),
-            CustomModelCheckpoint(monitor="val_loss", save_path=config['paths']['checkpoint_path'], mode="min")
+            CustomModelCheckpoint(monitor="val_loss", save_path=config['paths']['model_save_path'], mode="min")
         ],
         enable_progress_bar=True,
         logger=CSVLogger(save_dir="logs/")
@@ -207,11 +207,11 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
         logger.info("Pomijanie optymalizacji Optuna, używanie domyślnych hiperparametrów.")
 
     # Wczytywanie modelu
-    checkpoint_path = Path(config['paths']['checkpoint_path'])
-    logger.info(f"Ścieżka do checkpointu: {checkpoint_path}, istnieje: {checkpoint_path.exists()}")
-    if continue_training and checkpoint_path.exists():
-        logger.info(f"Wczytywanie checkpointu z {checkpoint_path}")
-        checkpoint = torch.load(checkpoint_path, map_location=torch.device('cpu'), weights_only=False)
+    model_save_path = Path(config['paths']['model_save_path'])
+    logger.info(f"Ścieżka do modelu: {model_save_path}, istnieje: {model_save_path.exists()}")
+    if continue_training and model_save_path.exists():
+        logger.info(f"Wczytywanie modelu z {model_save_path}")
+        checkpoint = torch.load(model_save_path, map_location=torch.device('cpu'), weights_only=False)
         hyperparams = checkpoint["hyperparams"]
         final_model = build_model(dataset, config, hyperparams=hyperparams)
         try:
@@ -223,7 +223,7 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
             logger.error(f"Błąd wczytywania state_dict: {e}")
             raise
     else:
-        logger.info("Brak checkpointu lub kontynuacja wyłączona, trenowanie od zera")
+        logger.info("Brak modelu lub kontynuacja wyłączona, trenowanie od zera")
         final_model = build_model(dataset, config, hyperparams=best_params)
 
     trainer = pl.Trainer(
@@ -233,7 +233,7 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
         precision="16-mixed" if torch.cuda.is_available() else "32-true",
         callbacks=[
             EarlyStopping(monitor="val_loss", patience=config['training']['early_stopping_patience']),
-            CustomModelCheckpoint(monitor="val_loss", save_path=config['paths']['checkpoint_path'], mode="min")
+            CustomModelCheckpoint(monitor="val_loss", save_path=config['paths']['model_save_path'], mode="min")
         ],
         enable_progress_bar=True,
         logger=CSVLogger(save_dir="logs/")
@@ -253,6 +253,6 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
         "state_dict": final_model.state_dict(),
         "hyperparams": dict(final_model.hparams)
     }
-    torch.save(checkpoint, Path(config['paths']['model_save_path']))
-    logger.info(f"Model zapisany w: {config['paths']['model_save_path']}")
+    torch.save(checkpoint, model_save_path)
+    logger.info(f"Model zapisany w: {model_save_path}")
     return final_model

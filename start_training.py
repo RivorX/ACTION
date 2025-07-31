@@ -73,9 +73,7 @@ async def start_training(regions: str = 'global', years: int = 3, use_optuna: bo
 
         # Dynamiczne ustawienie ścieżek na podstawie model_name
         model_name = config['model_name']
-        config['paths']['checkpoint_path'] = str(Path(config['paths']['models_dir']) / f"{model_name}_checkpoint.pth")
         config['paths']['model_save_path'] = str(Path(config['paths']['models_dir']) / f"{model_name}.pth")
-        logger.info(f"Ścieżka checkpointu: {config['paths']['checkpoint_path']}")
         logger.info(f"Ścieżka zapisu modelu: {config['paths']['model_save_path']}")
 
         # Trenuj model
