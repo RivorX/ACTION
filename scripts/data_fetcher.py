@@ -109,12 +109,10 @@ class DataFetcher:
             if sector not in self.sectors:
                 sector = 'Unknown'
             df['Sector'] = sector
-            logger.info(f"Przypisano sektor dla {ticker}: {sector}")
 
             # Logowanie liczby dni i sprawdzenie luk w danych
             expected_days = (end_date - adjusted_start_date).days * 0.6  # Minimum 60% dni handlowych
             actual_days = len(df)
-            logger.info(f"Liczba dni w danych dla {ticker}: {actual_days}, minimum oczekiwane: {expected_days}")
             if actual_days < expected_days:
                 logger.warning(f"Mała liczba dni dla {ticker}: {actual_days} dni, próbuję pobrać dłuższy zakres")
                 # Próba pobrania dłuższego zakresu danych
@@ -135,7 +133,6 @@ class DataFetcher:
 
             # Przycięcie danych do oryginalnego zakresu dat
             df = df[df['Date'] >= pd.Timestamp(start_date, tz='UTC')].reset_index(drop=True)
-            logger.info(f"Długość danych po przycięciu dla {ticker}: {len(df)}")
 
             # Filtruj wymagane kolumny
             required_cols = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 'Ticker', 'Sector']

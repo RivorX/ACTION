@@ -53,6 +53,11 @@ training:
   reduce_lr_factor: 0.6         # Czynnik redukcji współczynnika uczenia
   weight_decay: 0.12            # Współczynnik weight decay
 
+# Ustawienia walidacji
+validation:
+  enable_detailed_validation: false     # Czy włączyć szczegółowe logowanie walidacji
+  max_validation_batches_to_log: 3      # Maksymalna liczba batchy walidacyjnych do logowania
+
 # Ustawienia predykcji
 prediction:
   years: 3                      # Liczba lat historycznych do pobierania danych

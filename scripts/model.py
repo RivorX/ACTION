@@ -17,9 +17,9 @@ logger = logging.getLogger(__name__)
 torch.set_float32_matmul_precision('medium')
 
 def move_to_device(obj: Any, device: torch.device) -> Any:
-    """Rekurencyjnie przenosi tensory na wskazane urządzenie."""
+    """Rekurencyjnie przenosi tensory na wskazane urządzenie asynchronicznie z non_blocking=True."""
     if isinstance(obj, torch.Tensor):
-        return obj.to(device)
+        return obj.to(device, non_blocking=True)  # Asynchroniczne przenoszenie tensorów
     elif isinstance(obj, dict):
         return {key: move_to_device(val, device) for key, val in obj.items()}
     elif isinstance(obj, (list, tuple)):
@@ -126,7 +126,8 @@ class CustomTemporalFusionTransformer(LightningModule):
         self.normalizers_path = Path(config['data']['normalizers_path'])
         self.dataset = dataset
         self.val_batch_count = 0
-        self.max_val_batches_to_log = 3  # Ograniczenie logowania do 3 batchy
+        self.enable_detailed_validation = config['validation']['enable_detailed_validation']
+        self.max_val_batches_to_log = config['validation']['max_validation_batches_to_log']
         self.validation_outputs = []  
         self._load_normalizers()
         self._initialize_model(dataset)
@@ -203,6 +204,7 @@ class CustomTemporalFusionTransformer(LightningModule):
                 raise e
 
     def _shared_step(self, batch: Tuple[Dict[str, torch.Tensor], List[torch.Tensor]], batch_idx: int, stage: str) -> torch.Tensor:
+        # Uwaga: move_to_device używa non_blocking=True, co wymaga pin_memory=True w DataLoader
         x, y = batch
         x = move_to_device(x, self.device)
         y_target = move_to_device(y[0], self.device)
@@ -260,7 +262,7 @@ class CustomTemporalFusionTransformer(LightningModule):
         except Exception as e:
             logger.warning(f"Nie można obliczyć l2_norm: {e}")
         
-        if stage == 'val' and self.val_batch_count < self.max_val_batches_to_log:
+        if stage == 'val' and self.enable_detailed_validation and self.val_batch_count < self.max_val_batches_to_log:
             try:
                 self._log_validation_details(x, y_hat, y_target, batch_idx)
                 self.val_batch_count += 1
@@ -278,15 +280,16 @@ class CustomTemporalFusionTransformer(LightningModule):
         return weighted_loss
 
     def _log_validation_details(self, x, y_hat, y_target, batch_idx):
-        """Wydzielona funkcja do logowania szczegółów walidacji."""
+        """Wydzielona funkcja do logowania szczegółów walidacji, zminimalizowana synchronizacja."""
         relative_returns_normalizer = self.normalizers.get('Relative_Returns') or self.dataset.target_normalizer
         if relative_returns_normalizer:
             try:
-                y_hat_denorm = relative_returns_normalizer.inverse_transform(y_hat.float().cpu())
-                y_target_denorm = relative_returns_normalizer.inverse_transform(y_target.float().cpu())
+                # Minimalizujemy przenoszenie na CPU, wykonując tylko gdy konieczne
+                y_hat_denorm = relative_returns_normalizer.inverse_transform(y_hat.float())
+                y_target_denorm = relative_returns_normalizer.inverse_transform(y_target.float())
                 
                 if 'encoder_cont' in x:
-                    encoder_cont = x['encoder_cont'][0].cpu()
+                    encoder_cont = x['encoder_cont'][0]
                     close_normalizer = self.normalizers.get('Close')
                     if close_normalizer is not None:
                         try:
@@ -300,12 +303,12 @@ class CustomTemporalFusionTransformer(LightningModule):
                             
                             if close_idx is not None:
                                 last_close_norm = encoder_cont[-1, close_idx]
-                                last_close_denorm = close_normalizer.inverse_transform(torch.tensor([[last_close_norm]]))
-                                last_close_price = np.expm1(last_close_denorm.numpy())[0, 0]
+                                last_close_denorm = close_normalizer.inverse_transform(torch.tensor([[last_close_norm]], device=self.device))
+                                last_close_price = np.expm1(last_close_denorm.cpu().numpy())[0, 0]
                                 
                                 if last_close_price > 10000:
                                     logger.warning(f"Bardzo wysoka cena Close: {last_close_price:.2f}")
-                                    last_close_price_alt = last_close_denorm.numpy()[0, 0]
+                                    last_close_price_alt = last_close_denorm.cpu().numpy()[0, 0]
                                     if 10 <= last_close_price_alt <= 1000:
                                         last_close_price = last_close_price_alt
                                 
