@@ -411,7 +411,8 @@ class CustomTemporalFusionTransformer(LightningModule):
     def configure_optimizers(self) -> Dict[str, Any]:
         """Konfiguruje optymalizator i scheduler."""
         learning_rate = self.hyperparams.get('learning_rate', self.model_config.config['model']['learning_rate'])
-        optimizer = torch.optim.AdamW(self.parameters(), lr=learning_rate, weight_decay=0.15)
+        weight_decay = self.model_config.config['training']['weight_decay']
+        optimizer = torch.optim.AdamW(self.parameters(), lr=learning_rate, weight_decay=weight_decay)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer,
             mode='min',

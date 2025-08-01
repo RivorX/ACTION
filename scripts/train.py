@@ -57,7 +57,7 @@ def objective(trial, train_dataset: TimeSeriesDataSet, val_dataset: TimeSeriesDa
         logger=CSVLogger(save_dir="logs/")
     )
     val_dataloader = val_dataset.to_dataloader(
-        train=False, batch_size=config['training']['batch_size'], num_workers=4, persistent_workers=True
+        train=False, batch_size=config['training']['batch_size'], num_workers=6, persistent_workers=True, pin_memory=True
     )
     for batch in val_dataloader:
         x, y = batch
@@ -67,7 +67,7 @@ def objective(trial, train_dataset: TimeSeriesDataSet, val_dataset: TimeSeriesDa
         logger.info(f"Validation batch: y[0, :5] = {y[0][:5].tolist()}")
         break
     trainer.fit(model, train_dataloaders=train_dataset.to_dataloader(
-        train=True, batch_size=config['training']['batch_size'], num_workers=4, persistent_workers=True
+        train=True, batch_size=config['training']['batch_size'], num_workers=6, persistent_workers=True, pin_memory=True
     ), val_dataloaders=val_dataloader)
     return trainer.callback_metrics["val_combined_metric"].item()
 
@@ -228,10 +228,10 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
     trainer.fit(
         model=final_model,
         train_dataloaders=train_dataset.to_dataloader(
-            train=True, batch_size=config['training']['batch_size'], num_workers=4, persistent_workers=True
+            train=True, batch_size=config['training']['batch_size'], num_workers=6, persistent_workers=True, pin_memory=True
         ),
         val_dataloaders=val_dataset.to_dataloader(
-            train=False, batch_size=config['training']['batch_size'], num_workers=4, persistent_workers=True
+            train=False, batch_size=config['training']['batch_size'], num_workers=6, persistent_workers=True, pin_memory=True
         )
     )
     

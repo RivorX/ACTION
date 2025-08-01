@@ -51,6 +51,7 @@ training:
   optuna_trials: 5              # Liczba prób dla optymalizacji hiperparametrów
   reduce_lr_patience: 3         # Cierpliwość dla redukcji współczynnika uczenia
   reduce_lr_factor: 0.6         # Czynnik redukcji współczynnika uczenia
+  weight_decay: 0.12            # Współczynnik weight decay
 
 # Ustawienia predykcji
 prediction:

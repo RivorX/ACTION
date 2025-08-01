@@ -37,10 +37,15 @@ class FeatureEngineer:
 
     @staticmethod
     def calculate_stochastic_k(group: pd.DataFrame) -> pd.Series:
-        """Oblicza Stochastic %K."""
+        """Oblicza Stochastic %K z zabezpieczeniem przed dzieleniem przez zero."""
         low_14 = group['Low'].rolling(window=14).min()
         high_14 = group['High'].rolling(window=14).max()
-        return 100 * (group['Close'] - low_14) / (high_14 - low_14)
+        denominator = high_14 - low_14
+        # Zabezpieczenie przed dzieleniem przez zero
+        stochastic_k = 100 * (group['Close'] - low_14) / denominator.where(denominator != 0, 1e-10)
+        # Zamiana inf na 0
+        stochastic_k = stochastic_k.replace([np.inf, -np.inf], 0)
+        return stochastic_k
 
     @staticmethod
     def calculate_true_range(group: pd.DataFrame) -> pd.Series:

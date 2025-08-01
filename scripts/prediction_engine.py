@@ -184,7 +184,7 @@ def generate_predictions(config, dataset, model, ticker_data):
             'Day_of_Week': NaNLabelEncoder(add_nan=False),
             'Month': NaNLabelEncoder(add_nan=False)
         }
-    ).to_dataloader(train=False, batch_size=config['prediction']['batch_size'], num_workers=4)
+    ).to_dataloader(train=False, batch_size=config['prediction']['batch_size'], num_workers=6, pin_memory=True)
 
     with torch.no_grad(), torch.amp.autocast(device_type='cuda' if torch.cuda.is_available() else 'cpu', dtype=torch.float32):
         predictions = model.predict(ticker_dataset, mode="quantiles", return_x=True)
