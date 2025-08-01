@@ -90,9 +90,8 @@ Dostępne są jedynie **aktualne wartości** tych wskaźników poprzez metodę `
 │       └── transfer_weights.py # Przenoszenie wag między modelami
 ├── config/
 │   ├── config.yaml         # Plik konfiguracyjny
-│   ├── tickers.yaml        # Lista tickerów
-│   ├── benchmark_tickers.yaml # Tickery do benchmarku
-│   └── company_names.yaml  # Nazwy spółek
+│   ├── tickers.yaml        # Lista tickerów i nazw spółek
+│   └── benchmark_tickers.yaml # Tickery do benchmarku
 ├── data/                   # Dane surowe i przetworzone
 ├── models/                 # Zapisane modele
 ├── start_training.py       # Skrypt do treningu modelu
