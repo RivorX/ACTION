@@ -17,7 +17,7 @@ def create_directories():
         if not os.path.exists(directory):
             os.makedirs(directory)
 
-async def start_training(regions: str = 'global', years: int = 3, use_optuna: bool = False, continue_training: bool = True):
+async def start_training(regions: str = 'global', years: int = 3, use_optuna: bool = False, continue_training: bool = True, new_learning_rate: float = None):
     try:
         create_directories()
 
@@ -42,7 +42,7 @@ async def start_training(regions: str = 'global', years: int = 3, use_optuna: bo
         logger.info(f"Pobieranie danych dla regionów: {', '.join(selected_regions)}...")
 
         # Wczytaj tickery dla wybranych regionów
-        fetcher = DataFetcher(config_manager, years=years)  # Przekazanie years do DataFetcher
+        fetcher = DataFetcher(config_manager, years=years)
         all_tickers = []
         if 'all' in selected_regions:
             with open(config['data']['tickers_file'], 'r') as f:
@@ -61,8 +61,13 @@ async def start_training(regions: str = 'global', years: int = 3, use_optuna: bo
         # Aktualizacja konfiguracji z wybranymi tickerami
         config['data']['tickers'] = all_tickers
 
+        # Jeśli kontynuujemy trening i podano nową wartość learning rate, zaktualizuj konfigurację
+        if continue_training and new_learning_rate is not None:
+            config['model']['learning_rate'] = new_learning_rate
+            logger.info(f"Zaktualizowano learning rate na: {new_learning_rate}")
+
         # Pobierz dane asynchronicznie
-        df = await fetcher.fetch_global_stocks(region=None)  # region=None, bo tickery są już wybrane
+        df = await fetcher.fetch_global_stocks(region=None)
         if df.empty:
             raise ValueError("Nie udało się pobrać danych giełdowych.")
 
@@ -105,5 +110,21 @@ if __name__ == "__main__":
     continue_training_input = input("Kontynuować trening z checkpointu? (tak/nie) [domyślnie: tak]: ").lower() or 'tak'
     continue_training = continue_training_input != 'nie'
 
+    new_learning_rate = None
+    if continue_training:
+        reduce_lr_input = input("Czy obniżyć learning rate? (tak/nie) [domyślnie: nie]: ").lower() or 'nie'
+        if reduce_lr_input == 'tak':
+            lr_input = input("Podaj nową wartość learning rate (aktualnie: 0.001): ")
+            try:
+                new_learning_rate = float(lr_input)
+                if new_learning_rate <= 0:
+                    logger.error("Learning rate musi być większy od 0. Używam domyślnego learning rate.")
+                    new_learning_rate = None
+                else:
+                    logger.info(f"Nowa wartość learning rate: {new_learning_rate}")
+            except ValueError as e:
+                logger.error(f"Błąd: {e}. Używam domyślnego learning rate.")
+                new_learning_rate = None
+
     # Uruchom asynchroniczną funkcję start_training
-    asyncio.run(start_training(regions, years, use_optuna, continue_training))
+    asyncio.run(start_training(regions, years, use_optuna, continue_training, new_learning_rate))

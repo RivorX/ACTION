@@ -196,6 +196,10 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
         logger.info(f"Wczytywanie modelu z {model_save_path}")
         checkpoint = torch.load(model_save_path, map_location=torch.device('cpu'), weights_only=False)
         hyperparams = checkpoint["hyperparams"]
+        # Aktualizuj learning_rate w hiperparametrach, jeśli podano nową wartość
+        if config['model'].get('learning_rate') is not None:
+            hyperparams['learning_rate'] = config['model']['learning_rate']
+            logger.info(f"Zaktualizowano learning_rate w hiperparametrach modelu na: {hyperparams['learning_rate']}")
         final_model = build_model(dataset, config, hyperparams=hyperparams)
         try:
             final_model.load_state_dict(checkpoint["state_dict"])
