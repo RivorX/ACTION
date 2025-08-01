@@ -38,7 +38,10 @@ def clean_temp_dir(temp_dir):
 async def fetch_ticker_data(ticker, start_date, end_date):
     """Asynchronously fetches data for a single ticker."""
     try:
-        fetcher = DataFetcher(ConfigManager())
+        config_manager = ConfigManager()
+        config = config_manager.config
+        years = config['prediction']['years']
+        fetcher = DataFetcher(config_manager, years)
         data = fetcher.fetch_stock_data_sync(ticker, start_date, end_date)
         if data.empty:
             logger.error(f"No data for {ticker}")

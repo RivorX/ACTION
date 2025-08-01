@@ -21,13 +21,6 @@ from scripts.config_manager import ConfigManager
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Lista wszystkich możliwych sektorów
-ALL_SECTORS = [
-    'Technology', 'Healthcare', 'Financials', 'Consumer Discretionary', 'Consumer Staples',
-    'Energy', 'Utilities', 'Industrials', 'Materials', 'Communication Services',
-    'Real Estate', 'Unknown'
-]
-
 class FeatureImportanceAnalyzer:
     """
     Klasa do analizy ważności cech w modelach Temporal Fusion Transformer.
@@ -60,7 +53,7 @@ class FeatureImportanceAnalyzer:
             
             # Dynamiczne budowanie ścieżki do modelu na podstawie model_name i models_dir
             model_name = self.config['model_name']
-            checkpoint_path = Path(self.config['paths']['models_dir']) / f"{model_name}_checkpoint.pth"
+            checkpoint_path = Path(self.config['paths']['models_dir']) / f"{model_name}.pth"
             if not checkpoint_path.exists():
                 raise FileNotFoundError(f"Checkpoint nie istnieje: {checkpoint_path}")
                 
@@ -248,7 +241,7 @@ class FeatureImportanceAnalyzer:
                 importance_df['Total_Importance_Normalized'] = 0.0
                 
             importance_df = importance_df.sort_values('Total_Importance', ascending=False)
-            compact_df = importance_df[['Feature', 'Total_Importance', 'Total_Importance_Normalized']].copy()
+            compact_df = importance_df[['Feature', 'Total_Importance', 'Total_Importance_Normalized', 'Type']].copy()
                 
             output_path = Path(output_csv)
             output_path.parent.mkdir(parents=True, exist_ok=True)  # Tworzenie katalogu, jeśli nie istnieje
@@ -259,12 +252,20 @@ class FeatureImportanceAnalyzer:
             compact_df.to_csv(compact_path, index=False)
             logger.info(f"Kompaktowa wersja ważności cech zapisana do: {compact_path}")
             
+            # Zapisz tylko cechy bez 'attention' do oddzielnego pliku
+            non_attention_df = compact_df[
+                (~compact_df['Feature'].str.contains('attention', case=False, na=False)) &
+                (~compact_df['Feature'].str.contains('attention_feature_', case=False, na=False))
+            ].copy()
+            non_attention_path = output_path.parent / 'feature_importance_no_attention.csv'
+            non_attention_df.to_csv(non_attention_path, index=False)
+            logger.info(f"Wersja bez cech attention zapisana do: {non_attention_path}")
+            
+            # Wyświetlanie top 10 i bottom 10 cech w konsoli
             logger.info("Top 10 najważniejszych cech:")
-            for i, (feature, importance) in enumerate(
-                zip(compact_df['Feature'].head(10), compact_df['Total_Importance_Normalized'].head(10))
-            ):
-                logger.info(f"{i+1}. {feature}: {importance:.4f}")
-                
+            for i, row in compact_df.head(10).iterrows():
+                logger.info(f"{i+1}. {row['Feature']}: {row['Total_Importance_Normalized']:.4f} ({row['Type']})")
+            
             return importance_df, compact_df
                 
         except Exception as e:
