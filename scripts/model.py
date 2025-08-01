@@ -4,6 +4,7 @@ from pytorch_forecasting.metrics import MAE, QuantileLoss
 from pytorch_lightning import LightningModule
 import torch
 import logging
+import time
 from typing import Dict, Any, Optional, Union, List, Tuple
 import pickle
 from pathlib import Path
@@ -19,6 +20,8 @@ torch.set_float32_matmul_precision('medium')
 def move_to_device(obj: Any, device: torch.device) -> Any:
     """Rekurencyjnie przenosi tensory na wskazane urządzenie asynchronicznie z non_blocking=True."""
     if isinstance(obj, torch.Tensor):
+        if obj.device == device:
+            return obj  # Już na właściwym urządzeniu
         return obj.to(device, non_blocking=True)  # Asynchroniczne przenoszenie tensorów
     elif isinstance(obj, dict):
         return {key: move_to_device(val, device) for key, val in obj.items()}
@@ -170,9 +173,42 @@ class CustomTemporalFusionTransformer(LightningModule):
         return output
 
     def predict(self, data, **kwargs):
-        """Deleguje predykcję do wewnętrznego modelu."""
-        predictions = self.model.predict(data, **kwargs)
+        """Deleguje predykcję do wewnętrznego modelu z optymalizacją transferu na GPU."""
+        start_time = time.time()
+        device = self.device
+        
+        # Sprawdź czy dane to DataLoader i przenieś na GPU
+        if hasattr(data, '__iter__') and hasattr(data, 'dataset'):
+            # To jest DataLoader - stwórz nowy z właściwym device
+            original_dataloader = data
+            
+            # Stwórz nowy DataLoader z przenoszeniem na GPU
+            class GPUDataLoader:
+                def __init__(self, original_loader, target_device):
+                    self.original_loader = original_loader
+                    self.target_device = target_device
+                    self.dataset = original_loader.dataset
+                    self.batch_size = original_loader.batch_size
+                
+                def __iter__(self):
+                    for batch in self.original_loader:
+                        # Przenieś cały batch na GPU asynchronicznie
+                        batch_gpu = move_to_device(batch, self.target_device)
+                        yield batch_gpu
+                
+                def __len__(self):
+                    return len(self.original_loader)
+            
+            gpu_dataloader = GPUDataLoader(original_dataloader, device)
+            predictions = self.model.predict(gpu_dataloader, **kwargs)
+        else:
+            # Pojedynczy batch - przenieś na GPU
+            data_gpu = move_to_device(data, device)
+            predictions = self.model.predict(data_gpu, **kwargs)
+        
+        prediction_duration = time.time() - start_time
         logger.info(f"Kształt zwracanych predykcji: {predictions.output.shape}")
+        logger.info(f"Czas predykcji w metodzie predict: {prediction_duration:.3f} sekundy")
         return predictions
 
     def interpret_output(self, x: Dict[str, torch.Tensor], **kwargs) -> Dict[str, Any]:

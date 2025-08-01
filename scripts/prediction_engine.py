@@ -241,9 +241,9 @@ def generate_predictions(config, dataset, model, ticker_data):
     dataloader = ticker_dataset.to_dataloader(
         train=False,
         batch_size=batch_size,
-        num_workers=6,
+        num_workers=0,  # Zmieniono z 6 na 0 dla lepszego transferu na GPU
         pin_memory=True,
-        persistent_workers=True
+        persistent_workers=False  # Wyłączono dla num_workers=0
     )
     dataset_creation_duration = time.time() - dataset_creation_time
     logger.info(f"Tworzenie TimeSeriesDataSet i dataloadera zajęło: {dataset_creation_duration:.3f} sekundy")
