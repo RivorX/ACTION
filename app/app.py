@@ -83,9 +83,11 @@ class StockPredictor:
 
             _, dataset, normalizers, model = load_data_and_model(self.config, ticker, temp_raw_data_path)
             ticker_data, original_close = preprocess_data(self.config, new_data, ticker, normalizers)
+            logger.info(f"Długość ticker_data: {len(ticker_data)}, długość original_close: {len(original_close)}")
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             with torch.no_grad():
                 median, lower_bound, upper_bound = generate_predictions(self.config, dataset, model, ticker_data)
+            logger.info(f"Długość median: {len(median)}, lower_bound: {len(lower_bound)}, upper_bound: {len(upper_bound)}")
             
             return ticker_data, original_close, median, lower_bound, upper_bound
         except Exception as e:

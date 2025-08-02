@@ -3,19 +3,15 @@ import numpy as np
 import pandas as pd
 from datetime import datetime
 import torch
-from pytorch_forecasting import TimeSeriesDataSet, NaNLabelEncoder
-from pytorch_forecasting.metrics import QuantileLoss
-import pytorch_forecasting.data.encoders
-import pickle
-from pathlib import Path
+from pytorch_forecasting import TimeSeriesDataSet
+from scripts.data_fetcher import DataFetcher
+from scripts.model import build_model
+from scripts.utils.config_manager import ConfigManager
+from scripts.utils.preprocessing_utils import PreprocessingUtils
 import asyncio
 import aiohttp
 import os
 import time
-from scripts.data_fetcher import DataFetcher
-from scripts.model import build_model
-from scripts.preprocessor import DataPreprocessor
-from scripts.utils.config_manager import ConfigManager
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -49,16 +45,8 @@ async def load_data_and_model_async(config, ticker, temp_raw_data_path, historic
         logger.error(f"Błąd wczytywania datasetu: {e}")
         raise
 
-    try:
-        normalizers_load_time = time.time()
-        with open(config['data']['normalizers_path'], 'rb') as f:
-            normalizers = pickle.load(f)
-        normalizers_load_duration = time.time() - normalizers_load_time
-        logger.info(f"Wczytywanie normalizerów zajęło: {normalizers_load_duration:.3f} sekundy")
-        logger.info(f"Wczytano normalizery z: {config['data']['normalizers_path']}")
-    except Exception as e:
-        logger.error(f"Błąd wczytywania normalizerów: {e}")
-        raise
+    preprocessing_utils = PreprocessingUtils(config)
+    normalizers = preprocessing_utils.load_normalizers()
 
     relative_returns_normalizer_params = normalizers.get('Relative_Returns', None)
     target_normalizer_params = dataset.target_normalizer.get_parameters()
@@ -114,95 +102,8 @@ def load_data_and_model(config, ticker, temp_raw_data_path, historical_mode=Fals
 
 def preprocess_data(config, ticker_data, ticker, normalizers, historical_mode=False, trim_days=0):
     start_time = time.time()
-    ticker_data = ticker_data[ticker_data['Ticker'] == ticker].copy().reset_index(drop=True)
-    logger.info(f"Długość ticker_data po filtrowaniu tickera: {len(ticker_data)}")
-    ticker_data['Date'] = pd.to_datetime(ticker_data['Date'], utc=True)
-
-    # Zapisz original_close przed preprocessingiem
-    original_close = ticker_data['Close'].copy()
-    
-    if historical_mode and trim_days > 0:
-        ticker_data = ticker_data.iloc[:-trim_days].copy()
-        original_close = original_close.iloc[:-trim_days].copy()
-    
-    feature_engineer_time = time.time()
-    preprocessor = DataPreprocessor(config)
-    ticker_data = preprocessor.feature_engineer.add_features(ticker_data)
-    feature_engineer_duration = time.time() - feature_engineer_time
-    logger.info(f"Dodawanie cech zajęło: {feature_engineer_duration:.3f} sekundy")
-    logger.info(f"Długość ticker_data po dodaniu cech: {len(ticker_data)}")
-    
-    dropna_time = time.time()
-    ticker_data = ticker_data.dropna(subset=['Close', 'Open', 'High', 'Low', 'Volume'])
-    dropna_duration = time.time() - dropna_time
-    logger.info(f"Usuwanie NaN zajęło: {dropna_duration:.3f} sekundy")
-    logger.info(f"Długość ticker_data po dropna: {len(ticker_data)}")
-    
-    filter_time = time.time()
-    ticker_data = ticker_data[(ticker_data['Close'] > 0) & (ticker_data['High'] >= ticker_data['Low'])]
-    filter_duration = time.time() - filter_time
-    logger.info(f"Filtrowanie danych zajęło: {filter_duration:.3f} sekundy")
-    logger.info(f"Długość ticker_data po warunku: {len(ticker_data)}")
-    
-    # Przytnij original_close do tej samej długości co ticker_data po dropna
-    original_close = original_close.loc[ticker_data.index].copy()
-    logger.info(f"Długość original_close po przycięciu: {len(original_close)}")
-    
-    ticker_data['time_idx'] = range(len(ticker_data))
-    ticker_data['group_id'] = ticker
-    
-    # Upewnij się, że Day_of_Week ma dokładnie 7 kategorii (0-6)
-    day_of_week_time = time.time()
-    ticker_data['Day_of_Week'] = ticker_data['Date'].dt.dayofweek.astype(str)
-    if ticker_data['Day_of_Week'].isna().any():
-        logger.warning(f"Znaleziono NaN w Day_of_Week, wypełniam wartością '0'")
-        ticker_data['Day_of_Week'] = ticker_data['Day_of_Week'].fillna('0')
-    ticker_data['Day_of_Week'] = pd.Categorical(ticker_data['Day_of_Week'], 
-                                               categories=[str(i) for i in range(7)], 
-                                               ordered=False)
-    day_of_week_duration = time.time() - day_of_week_time
-    logger.info(f"Przetwarzanie Day_of_Week zajęło: {day_of_week_duration:.3f} sekundy")
-    
-    sector_time = time.time()
-    config_manager = ConfigManager()
-    ticker_data['Sector'] = pd.Categorical(ticker_data['Sector'], categories=config_manager.get_sectors(), ordered=False)
-    sector_duration = time.time() - sector_time
-    logger.info(f"Przetwarzanie Sector zajęło: {sector_duration:.3f} sekundy")
-    
-    log_features_time = time.time()
-    log_features = [
-        "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "ATR", "BB_width",
-        "Tenkan_sen", "Kijun_sen", "Senkou_Span_A", "Senkou_Span_B", "VWAP"
-    ]
-    for feature in log_features:
-        if feature in ticker_data.columns:
-            ticker_data[feature] = np.log1p(ticker_data[feature].clip(lower=0))
-    log_features_duration = time.time() - log_features_time
-    logger.info(f"Logarytmowanie cech zajęło: {log_features_duration:.3f} sekundy")
-    
-    normalize_time = time.time()
-    numeric_features = [
-        "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI",
-        "MACD", "MACD_Signal", "MACD_Histogram", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
-        "ADX", "CCI", "Tenkan_sen", "Kijun_sen", "Senkou_Span_A", "Senkou_Span_B", "ROC", "VWAP",
-        "Momentum_20d", "Close_to_MA_ratio", "BB_width", "Close_to_BB_upper", "Close_to_BB_lower",
-        "Relative_Returns", "Log_Returns", "Future_Volume", "Future_Volatility"
-    ]
-    for feature in numeric_features:
-        if feature in ticker_data.columns and feature in normalizers:
-            ticker_data[feature] = normalizers[feature].transform(ticker_data[feature].values)
-    normalize_duration = time.time() - normalize_time
-    logger.info(f"Normalizacja cech numerycznych zajęła: {normalize_duration:.3f} sekundy")
-    
-    categorical_time = time.time()
-    categorical_columns = ['Day_of_Week', 'Month']
-    for cat_col in categorical_columns:
-        if cat_col in ticker_data.columns:
-            ticker_data[cat_col] = ticker_data[cat_col].astype(str)
-    categorical_duration = time.time() - categorical_time
-    logger.info(f"Przetwarzanie cech kategorycznych zajęło: {categorical_duration:.3f} sekundy")
-    
-    logger.info(f"Kolumny ticker_data: {ticker_data.columns.tolist()}")
+    preprocessing_utils = PreprocessingUtils(config)
+    ticker_data, original_close = preprocessing_utils.preprocess_dataframe(ticker_data, ticker, historical_mode, trim_days)
     total_duration = time.time() - start_time
     logger.info(f"Całkowity czas preprocess_data: {total_duration:.3f} sekundy")
     return ticker_data, original_close
@@ -214,36 +115,17 @@ def generate_predictions(config, dataset, model, ticker_data):
     logger.info(f"Urządzenie parametrów modelu: {next(model.parameters()).device}")
     
     model = model.to(device)
-    
-    # Upewnienie się, że kolumny kategoryczne są stringami
-    categorical_time = time.time()
-    categorical_columns = ['Day_of_Week', 'Month']
-    for cat_col in categorical_columns:
-        if cat_col in ticker_data.columns:
-            ticker_data[cat_col] = ticker_data[cat_col].astype(str)
-    categorical_duration = time.time() - categorical_time
-    logger.info(f"Konwersja kolumn kategorycznych zajęła: {categorical_duration:.3f} sekundy")
+    preprocessing_utils = PreprocessingUtils(config)
     
     dataset_creation_time = time.time()
-    ticker_dataset = TimeSeriesDataSet.from_parameters(
-        dataset.get_parameters(),
-        ticker_data,
-        predict_mode=True,
-        max_prediction_length=config['model']['max_prediction_length'],
-        static_categoricals=["Sector"], 
-        categorical_encoders={
-            'Sector': NaNLabelEncoder(add_nan=False),
-            'Day_of_Week': NaNLabelEncoder(add_nan=False),
-            'Month': NaNLabelEncoder(add_nan=False)
-        }
-    )
+    ticker_dataset = preprocessing_utils.create_dataset(ticker_data, dataset.get_parameters(), predict_mode=True)
     batch_size = config['prediction']['batch_size']
     dataloader = ticker_dataset.to_dataloader(
         train=False,
         batch_size=batch_size,
-        num_workers=0,  # Zmieniono z 6 na 0 dla lepszego transferu na GPU
+        num_workers=0,
         pin_memory=True,
-        persistent_workers=False  # Wyłączono dla num_workers=0
+        persistent_workers=False
     )
     dataset_creation_duration = time.time() - dataset_creation_time
     logger.info(f"Tworzenie TimeSeriesDataSet i dataloadera zajęło: {dataset_creation_duration:.3f} sekundy")
@@ -265,12 +147,8 @@ def generate_predictions(config, dataset, model, ticker_data):
     pred_array = target_normalizer.inverse_transform(pred_array)
     last_close_price = ticker_data['Close'].iloc[-1]
     
-    try:
-        with open(config['data']['normalizers_path'], 'rb') as f:
-            normalizers = pickle.load(f)
-        close_normalizer = normalizers.get('Close', target_normalizer)
-    except:
-        close_normalizer = target_normalizer
+    normalizers = preprocessing_utils.load_normalizers()
+    close_normalizer = normalizers.get('Close', target_normalizer)
     
     last_close_denorm = close_normalizer.inverse_transform(torch.tensor([[last_close_price]]).float())
     last_close_denorm = np.expm1(last_close_denorm.numpy())[0, 0]

@@ -104,11 +104,32 @@ def create_stock_plot(config, ticker_data, original_close, median, lower_bound, 
         ))
     else:
         # Future prediction mode
+        logger.info(f"Długość historical_dates: {len(historical_dates)}")
+        logger.info(f"Długość pred_dates: {len(pred_dates)}")
+        logger.info(f"Długość original_close: {len(original_close)}")
+        logger.info(f"Długość median: {len(median)}")
+        logger.info(f"Długość lower_bound: {len(lower_bound)}")
+        logger.info(f"Długość upper_bound: {len(upper_bound)}")
+        
+        # Dopasuj długości, obcinając początkowe dni, jeśli różnica <= 10
+        max_trim = 10
+        if len(original_close) > len(historical_dates) and len(original_close) - len(historical_dates) <= max_trim:
+            trim_count = len(original_close) - len(historical_dates)
+            logger.warning(f"Obcinanie {trim_count} początkowych dni z original_close, lower_bound i upper_bound dla {ticker}")
+            original_close = original_close[trim_count:]
+            combined_lower_bound = [None] * len(historical_dates) + lower_bound.tolist()
+            combined_upper_bound = [None] * len(historical_dates) + upper_bound.tolist()
+        else:
+            combined_lower_bound = [None] * len(original_close) + lower_bound.tolist()
+            combined_upper_bound = [None] * len(original_close) + upper_bound.tolist()
+        
         combined_dates = historical_dates + [d.to_pydatetime() for d in pred_dates]
         combined_close = original_close.tolist() + median.tolist()
-        combined_lower_bound = [None] * len(original_close) + lower_bound.tolist()
-        combined_upper_bound = [None] * len(original_close) + upper_bound.tolist()
         
+        if not (len(combined_dates) == len(combined_close) == len(combined_lower_bound) == len(combined_upper_bound)):
+            logger.error(f"Niezgodność długości: combined_dates={len(combined_dates)}, combined_close={len(combined_close)}, combined_lower_bound={len(combined_lower_bound)}, combined_upper_bound={len(combined_upper_bound)}")
+            raise ValueError("Wszystkie tablice muszą mieć tę samą długość")
+
         plot_data = pd.DataFrame({
             'Date': combined_dates,
             'Close': combined_close,

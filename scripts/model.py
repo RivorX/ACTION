@@ -10,19 +10,17 @@ import pickle
 from pathlib import Path
 import numpy as np
 
-# Konfiguracja logowania
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Ustaw precyzję dla Tensor Cores na GPU
 torch.set_float32_matmul_precision('medium')
 
 def move_to_device(obj: Any, device: torch.device) -> Any:
     """Rekurencyjnie przenosi tensory na wskazane urządzenie asynchronicznie z non_blocking=True."""
     if isinstance(obj, torch.Tensor):
         if obj.device == device:
-            return obj  # Już na właściwym urządzeniu
-        return obj.to(device, non_blocking=True)  # Asynchroniczne przenoszenie tensorów
+            return obj
+        return obj.to(device, non_blocking=True)
     elif isinstance(obj, dict):
         return {key: move_to_device(val, device) for key, val in obj.items()}
     elif isinstance(obj, (list, tuple)):
@@ -46,9 +44,9 @@ class ModelConfig:
         self.weight_end = config['model']['weight_end']
         self.directional_weight = config['model']['directional_weight']
         self.embedding_sizes = {
-            'Sector': (12, 5),  # 12 kategorii, wymiar osadzenia 5
-            'Day_of_Week': (7, 5),  # 7 kategorii, wymiar osadzenia 5
-            'Month': (12, 5)  # 12 kategorii, wymiar osadzenia 5
+            'Sector': (12, 5),
+            'Day_of_Week': (7, 5),
+            'Month': (12, 5)
         }
         self.default_hyperparams = self._get_default_hyperparams()
 
@@ -131,20 +129,9 @@ class CustomTemporalFusionTransformer(LightningModule):
         self.val_batch_count = 0
         self.enable_detailed_validation = config['validation']['enable_detailed_validation']
         self.max_val_batches_to_log = config['validation']['max_validation_batches_to_log']
-        self.validation_outputs = []  
-        self._load_normalizers()
+        self.validation_outputs = []
         self._initialize_model(dataset)
         self._save_hyperparameters()
-
-    def _load_normalizers(self):
-        """Wczytuje normalizery z pliku."""
-        try:
-            with open(self.normalizers_path, 'rb') as f:
-                self.normalizers = pickle.load(f)
-            logger.info(f"Wczytano normalizery z: {self.normalizers_path}")
-        except Exception as e:
-            logger.error(f"Błąd wczytywania normalizerów: {e}")
-            self.normalizers = {}
 
     def _initialize_model(self, dataset):
         """Inicjalizuje TemporalFusionTransformer z filtrowanymi parametrami."""
@@ -177,12 +164,7 @@ class CustomTemporalFusionTransformer(LightningModule):
         start_time = time.time()
         device = self.device
         
-        # Sprawdź czy dane to DataLoader i przenieś na GPU
         if hasattr(data, '__iter__') and hasattr(data, 'dataset'):
-            # To jest DataLoader - stwórz nowy z właściwym device
-            original_dataloader = data
-            
-            # Stwórz nowy DataLoader z przenoszeniem na GPU
             class GPUDataLoader:
                 def __init__(self, original_loader, target_device):
                     self.original_loader = original_loader
@@ -192,17 +174,15 @@ class CustomTemporalFusionTransformer(LightningModule):
                 
                 def __iter__(self):
                     for batch in self.original_loader:
-                        # Przenieś cały batch na GPU asynchronicznie
                         batch_gpu = move_to_device(batch, self.target_device)
                         yield batch_gpu
                 
                 def __len__(self):
                     return len(self.original_loader)
             
-            gpu_dataloader = GPUDataLoader(original_dataloader, device)
+            gpu_dataloader = GPUDataLoader(data, device)
             predictions = self.model.predict(gpu_dataloader, **kwargs)
         else:
-            # Pojedynczy batch - przenieś na GPU
             data_gpu = move_to_device(data, device)
             predictions = self.model.predict(data_gpu, **kwargs)
         
@@ -240,7 +220,6 @@ class CustomTemporalFusionTransformer(LightningModule):
                 raise e
 
     def _shared_step(self, batch: Tuple[Dict[str, torch.Tensor], List[torch.Tensor]], batch_idx: int, stage: str) -> torch.Tensor:
-        # Uwaga: move_to_device używa non_blocking=True, co wymaga pin_memory=True w DataLoader
         x, y = batch
         x = move_to_device(x, self.device)
         y_target = move_to_device(y[0], self.device)
@@ -264,7 +243,6 @@ class CustomTemporalFusionTransformer(LightningModule):
                 directional_weight = self.hyperparams.get('directional_weight', self.model_config.directional_weight)
                 total_loss = (1.0 - directional_weight) * quantile_loss + directional_weight * (1.0 - directional_accuracy / 100)
                 
-                # Obliczanie val_combined_metric
                 combined_metric = 0.7 * quantile_loss + 0.3 * (1.0 - directional_accuracy / 100)
                 
                 prediction_length = y_hat.shape[1]
@@ -317,16 +295,23 @@ class CustomTemporalFusionTransformer(LightningModule):
 
     def _log_validation_details(self, x, y_hat, y_target, batch_idx):
         """Wydzielona funkcja do logowania szczegółów walidacji, zminimalizowana synchronizacja."""
-        relative_returns_normalizer = self.normalizers.get('Relative_Returns') or self.dataset.target_normalizer
+        try:
+            with open(self.normalizers_path, 'rb') as f:
+                normalizers = pickle.load(f)
+            logger.info(f"Wczytano normalizery z: {self.normalizers_path}")
+        except Exception as e:
+            logger.error(f"Błąd wczytywania normalizerów: {e}")
+            normalizers = {}
+
+        relative_returns_normalizer = normalizers.get('Relative_Returns') or self.dataset.target_normalizer
         if relative_returns_normalizer:
             try:
-                # Minimalizujemy przenoszenie na CPU, wykonując tylko gdy konieczne
                 y_hat_denorm = relative_returns_normalizer.inverse_transform(y_hat.float())
                 y_target_denorm = relative_returns_normalizer.inverse_transform(y_target.float())
                 
                 if 'encoder_cont' in x:
                     encoder_cont = x['encoder_cont'][0]
-                    close_normalizer = self.normalizers.get('Close')
+                    close_normalizer = normalizers.get('Close')
                     if close_normalizer is not None:
                         try:
                             numeric_features = [
@@ -379,11 +364,10 @@ class CustomTemporalFusionTransformer(LightningModule):
         current_price_target = last_close_price
         
         for i in range(min(5, y_hat_denorm.shape[1])):
-            # Dla predykcji (quantiles)
-            if y_hat_denorm.dim() == 3:  # Sprawdź, czy tensor ma 3 wymiary
-                relative_return_pred = to_scalar(y_hat_denorm[0, i, 1])  # mediana
-                relative_return_pred_lower = to_scalar(y_hat_denorm[0, i, 0])  # dolny
-                relative_return_pred_upper = to_scalar(y_hat_denorm[0, i, 2])  # górny
+            if y_hat_denorm.dim() == 3:
+                relative_return_pred = to_scalar(y_hat_denorm[0, i, 1])
+                relative_return_pred_lower = to_scalar(y_hat_denorm[0, i, 0])
+                relative_return_pred_upper = to_scalar(y_hat_denorm[0, i, 2])
             else:
                 logger.warning(f"y_hat_denorm ma nieoczekiwany kształt: {y_hat_denorm.shape}")
                 relative_return_pred = to_scalar(y_hat_denorm[0, i])
@@ -444,8 +428,8 @@ class CustomTemporalFusionTransformer(LightningModule):
             logger.info(f"Validation epoch end: learning_rate = {self.optimizers().param_groups[0]['lr']:.6f}")
         else:
             logger.warning("Brak wyników walidacji w validation_outputs")
-        self.validation_outputs.clear()  # Czyszczenie wyników po epoce
-        self.val_batch_count = 0  # Resetowanie licznika po epoce
+        self.validation_outputs.clear()
+        self.val_batch_count = 0
 
     def configure_optimizers(self) -> Dict[str, Any]:
         """Konfiguruje optymalizator i scheduler."""

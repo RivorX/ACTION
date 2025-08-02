@@ -24,17 +24,14 @@ async def start_training(regions: str = 'global', years: int = 3, use_optuna: bo
     try:
         create_directories()
 
-        # Wczytaj konfigurację
         config_manager = ConfigManager()
         config = config_manager.config
         
-        # Walidacja liczby lat
         if years < 3:
             logger.warning(f"Podano {years} lat. Minimalna liczba lat to 3. Ustawiam domyślnie na 3 lata.")
             years = 3
         logger.info(f"Ustawiono liczbę lat danych: {years}")
 
-        # Przetwarzanie wybranych regionów
         regions_list = [r.strip().lower() for r in regions.split(',')]
         valid_regions = ['poland', 'europe', 'usa', 'global', 'all']
         selected_regions = [r for r in regions_list if r in valid_regions]
@@ -44,7 +41,6 @@ async def start_training(regions: str = 'global', years: int = 3, use_optuna: bo
 
         logger.info(f"Pobieranie danych dla regionów: {', '.join(selected_regions)}...")
 
-        # Wczytaj tickery dla wybranych regionów
         fetcher = DataFetcher(config_manager, years=years)
         all_tickers = []
         if 'all' in selected_regions:
@@ -57,34 +53,27 @@ async def start_training(regions: str = 'global', years: int = 3, use_optuna: bo
                 tickers = fetcher._load_tickers(region)
                 all_tickers.extend(tickers)
         
-        # Usuń duplikaty tickerów
         all_tickers = list(dict.fromkeys(all_tickers))
         logger.info(f"Wybrane tickery: {all_tickers}")
 
-        # Aktualizacja konfiguracji z wybranymi tickerami
         config['data']['tickers'] = all_tickers
 
-        # Jeśli kontynuujemy trening i podano nową wartość learning rate, zaktualizuj konfigurację
         if continue_training and new_learning_rate is not None:
             config['model']['learning_rate'] = new_learning_rate
             logger.info(f"Zaktualizowano learning rate na: {new_learning_rate}")
 
-        # Pobierz dane asynchronicznie
         df = await fetcher.fetch_global_stocks(region=None)
         if df.empty:
             raise ValueError("Nie udało się pobrać danych giełdowych.")
 
-        # Preprocessuj dane
         logger.info("Preprocessing danych...")
         preprocessor = DataPreprocessor(config)
         dataset = preprocessor.preprocess_data(df)
 
-        # Dynamiczne ustawienie ścieżek na podstawie model_name
         model_name = config['model_name']
         config['paths']['model_save_path'] = str(Path(config['paths']['models_dir']) / f"{model_name}.pth")
         logger.info(f"Ścieżka zapisu modelu: {config['paths']['model_save_path']}")
 
-        # Jeśli nie kontynuujemy treningu, zapytaj o transfer learning
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         if not continue_training:
             use_transfer_learning = input("Czy użyć transfer learningu z istniejącego modelu? (tak/nie) [domyślnie: nie]: ").lower() or 'nie'
@@ -94,22 +83,18 @@ async def start_training(regions: str = 'global', years: int = 3, use_optuna: bo
                     logger.error("Nie podano nazwy pliku starego modelu.")
                     raise ValueError("Nazwa pliku starego modelu nie może być pusta.")
                 
-                # Utwórz pełną ścieżkę do starego modelu
                 models_dir = Path(config['paths']['models_dir'])
                 old_checkpoint_path = models_dir / old_model_filename
 
-                # Sprawdź, czy plik istnieje
                 if not old_checkpoint_path.exists():
                     logger.error(f"Plik {old_checkpoint_path} nie istnieje w katalogu {models_dir}.")
                     raise FileNotFoundError(f"Plik {old_checkpoint_path} nie istnieje.")
 
-                # Zbuduj nowy model i przenieś wagi
                 logger.info("Budowanie modelu dla transfer learningu...")
                 new_model = build_model(dataset, config)
                 new_model = transfer_weights(old_checkpoint_path, new_model, device)
                 logger.info("Wagi przeniesione pomyślnie, zapis modelu przed treningiem...")
                 
-                # Zapisz model z przeniesionymi wagami
                 checkpoint = {
                     'state_dict': new_model.state_dict(),
                     'hyperparams': dict(new_model.hparams)
@@ -117,7 +102,6 @@ async def start_training(regions: str = 'global', years: int = 3, use_optuna: bo
                 torch.save(checkpoint, config['paths']['model_save_path'])
                 logger.info(f"Model z przeniesionymi wagami zapisano w: {config['paths']['model_save_path']}")
 
-        # Trenuj model
         logger.info("Trenowanie modelu...")
         train_model(dataset, config, use_optuna=use_optuna, continue_training=continue_training)
 
@@ -162,5 +146,4 @@ if __name__ == "__main__":
                 logger.error(f"Błąd: {e}. Używam domyślnego learning rate.")
                 new_learning_rate = None
 
-    # Uruchom asynchroniczną funkcję start_training
     asyncio.run(start_training(regions, years, use_optuna, continue_training, new_learning_rate))

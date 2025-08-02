@@ -2,19 +2,15 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import EarlyStopping
 from pytorch_lightning.loggers import CSVLogger
 import torch
-from pytorch_forecasting import TimeSeriesDataSet, NaNLabelEncoder
-from scripts.data_fetcher import DataFetcher
-from scripts.preprocessor import DataPreprocessor
-from scripts.model import build_model, CustomTemporalFusionTransformer
+from pytorch_forecasting import TimeSeriesDataSet
+from scripts.model import build_model
 from scripts.utils.config_manager import ConfigManager
+from scripts.utils.preprocessing_utils import PreprocessingUtils
 import optuna
 import pandas as pd
-import numpy as np
-import pickle
 import logging
 from pathlib import Path
 
-# Konfiguracja logowania
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -79,73 +75,15 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
     df = df[df['Ticker'].isin(selected_tickers)]
     if df.empty:
         raise ValueError(f"Brak danych dla wybranych tickerów: {selected_tickers}")
-    
-    preprocessor = DataPreprocessor(config)
-    df = preprocessor.feature_engineer.add_features(df)
-    df = df.dropna(subset=['Close', 'Open', 'High', 'Low', 'Volume'])
-    df = df[(df['Close'] > 0) & (df['High'] >= df['Low'])]
-    df['Date'] = pd.to_datetime(df['Date'], utc=True)
-    df['time_idx'] = (df['Date'] - df['Date'].min()).dt.days.astype(int)
-    df['group_id'] = df['Ticker']
-    
-    config_manager = ConfigManager()
-    df['Sector'] = pd.Categorical(df['Sector'], categories=config_manager.get_sectors(), ordered=False)
-    df['Day_of_Week'] = pd.Categorical(df['Day_of_Week'], categories=[str(i) for i in range(7)], ordered=False)
-    logger.info(f"Kategorie sektorów w train.py: {df['Sector'].cat.categories.tolist()}")
-    logger.info(f"Kategorie dni tygodnia w train.py: {df['Day_of_Week'].cat.categories.tolist()}")
-    
-    with open(config['data']['normalizers_path'], 'rb') as f:
-        normalizers = pickle.load(f)
-    logger.info(f"Wczytano normalizery z: {config['data']['normalizers_path']}")
-    
-    log_features = [
-        "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "ATR", "BB_width",
-        "Tenkan_sen", "Kijun_sen", "Senkou_Span_A", "Senkou_Span_B", "VWAP"
-    ]
-    
-    for feature in log_features:
-        if feature in df.columns:
-            df[feature] = np.log1p(df[feature].clip(lower=0))
-    
-    numeric_features = [
-        "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI",
-        "MACD", "MACD_Signal", "MACD_Histogram", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
-        "ADX", "CCI", "Tenkan_sen", "Kijun_sen", "Senkou_Span_A", "Senkou_Span_B", "ROC", "VWAP",
-        "Momentum_20d", "Close_to_MA_ratio", "BB_width", "Close_to_BB_upper", "Close_to_BB_lower",
-        "Relative_Returns"
-    ]
-    
-    for feature in numeric_features:
-        if feature in df.columns and feature in normalizers:
-            try:
-                df[feature] = normalizers[feature].transform(df[feature].values)
-                if df[feature].isna().any() or np.isinf(df[feature]).any():
-                    logger.error(f"Transformacja cechy {feature} spowodowała NaN lub inf")
-            except Exception as e:
-                logger.error(f"Błąd transformacji cechy {feature}: {e}")
-        elif feature in df.columns:
-            logger.info(f"Pomijanie normalizacji dla cechy {feature}, ponieważ nie jest w normalizers.pkl")
 
-    for col in numeric_features:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce').astype(float)
-            nan_count = df[col].isna().sum()
-            if nan_count > 0:
-                logger.warning(f"Cecha {col} ma {nan_count} wartości NaN po konwersji")
-    
-    categorical_columns = ['Day_of_Week', 'Month']
-    for cat_col in categorical_columns:
-        if cat_col in df.columns:
-            if cat_col == 'Day_of_Week':
-                df[cat_col] = pd.Categorical(df[cat_col], categories=[str(i) for i in range(7)], ordered=False)
-            df[cat_col] = df[cat_col].astype(str)
+    preprocessing_utils = PreprocessingUtils(config)
+    df, _ = preprocessing_utils.preprocess_dataframe(df)
 
     min_val_records = config['model'].get('min_prediction_length', 1) + config['model'].get('min_encoder_length', 1)
     group_counts = df.groupby('group_id').size().reset_index(name='count')
-    
     valid_groups = group_counts[group_counts['count'] >= min_val_records]['group_id']
-    
     df = df[df['group_id'].isin(valid_groups)]
+
     train_df = df[df['time_idx'] <= int(df['time_idx'].max() * 0.8)]
     val_df = df[df['time_idx'] > int(df['time_idx'].max() * 0.8)]
     
@@ -154,26 +92,8 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
 
     logger.info(f"max_time_idx: {df['time_idx'].max()}, split_idx: {int(df['time_idx'].max() * 0.8)}")
 
-    train_dataset = TimeSeriesDataSet.from_parameters(
-        dataset.get_parameters(),
-        train_df,
-        static_categoricals=["Sector"], 
-        categorical_encoders={
-            'Sector': NaNLabelEncoder(add_nan=False),
-            'Day_of_Week': NaNLabelEncoder(add_nan=False),
-            'Month': NaNLabelEncoder(add_nan=False)
-        }
-    )
-    val_dataset = TimeSeriesDataSet.from_parameters(
-        dataset.get_parameters(),
-        val_df,
-        static_categoricals=["Sector"], 
-        categorical_encoders={
-            'Sector': NaNLabelEncoder(add_nan=False),
-            'Day_of_Week': NaNLabelEncoder(add_nan=False),
-            'Month': NaNLabelEncoder(add_nan=False)
-        }
-    )
+    train_dataset = preprocessing_utils.create_dataset(train_df, dataset.get_parameters())
+    val_dataset = preprocessing_utils.create_dataset(val_df, dataset.get_parameters())
 
     if len(val_dataset) == 0 or len(train_dataset) == 0:
         raise ValueError(f"Zbiory danych są puste: train_dataset={len(train_dataset)}, val_dataset={len(val_dataset)}")
@@ -196,7 +116,6 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
         logger.info(f"Wczytywanie modelu z {model_save_path}")
         checkpoint = torch.load(model_save_path, map_location=torch.device('cpu'), weights_only=False)
         hyperparams = checkpoint["hyperparams"]
-        # Aktualizuj learning_rate w hiperparametrach, jeśli podano nową wartość
         if config['model'].get('learning_rate') is not None:
             hyperparams['learning_rate'] = config['model']['learning_rate']
             logger.info(f"Zaktualizowano learning_rate w hiperparametrach modelu na: {hyperparams['learning_rate']}")
