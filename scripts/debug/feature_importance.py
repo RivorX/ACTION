@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 
 from pytorch_forecasting import TimeSeriesDataSet, TemporalFusionTransformer
 from scripts.model import build_model
-from scripts.config_manager import ConfigManager
+from scripts.utils.config_manager import ConfigManager
 
 # Konfiguracja logowania
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -252,14 +252,14 @@ class FeatureImportanceAnalyzer:
             compact_df.to_csv(compact_path, index=False)
             logger.info(f"Kompaktowa wersja ważności cech zapisana do: {compact_path}")
             
-            # Zapisz tylko cechy bez 'attention' do oddzielnego pliku
-            non_attention_df = compact_df[
-                (~compact_df['Feature'].str.contains('attention', case=False, na=False)) &
-                (~compact_df['Feature'].str.contains('attention_feature_', case=False, na=False))
+            # Zapisz pełny DataFrame bez cech attention do oddzielnego pliku
+            non_attention_df = importance_df[
+                (~importance_df['Feature'].str.contains('attention', case=False, na=False)) &
+                (~importance_df['Feature'].str.contains('attention_feature_', case=False, na=False))
             ].copy()
             non_attention_path = output_path.parent / 'feature_importance_no_attention.csv'
             non_attention_df.to_csv(non_attention_path, index=False)
-            logger.info(f"Wersja bez cech attention zapisana do: {non_attention_path}")
+            logger.info(f"Pełna wersja bez cech attention zapisana do: {non_attention_path}")
             
             # Wyświetlanie top 10 i bottom 10 cech w konsoli
             logger.info("Top 10 najważniejszych cech:")
