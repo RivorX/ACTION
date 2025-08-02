@@ -1,6 +1,6 @@
 import yaml
 import logging
-from scripts.config_manager import ConfigManager
+from scripts.utils.config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
 

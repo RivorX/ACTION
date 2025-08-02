@@ -15,7 +15,7 @@ import time
 from scripts.data_fetcher import DataFetcher
 from scripts.model import build_model
 from scripts.preprocessor import DataPreprocessor
-from scripts.config_manager import ConfigManager
+from scripts.utils.config_manager import ConfigManager
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)

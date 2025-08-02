@@ -7,7 +7,7 @@ import torch
 import pickle
 import logging
 from pathlib import Path
-from scripts.config_manager import ConfigManager
+from scripts.utils.config_manager import ConfigManager
 
 # Konfiguracja logowania
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')

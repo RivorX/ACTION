@@ -6,7 +6,7 @@ from pytorch_forecasting import TimeSeriesDataSet, NaNLabelEncoder
 from scripts.data_fetcher import DataFetcher
 from scripts.preprocessor import DataPreprocessor
 from scripts.model import build_model, CustomTemporalFusionTransformer
-from scripts.config_manager import ConfigManager
+from scripts.utils.config_manager import ConfigManager
 import optuna
 import pandas as pd
 import numpy as np

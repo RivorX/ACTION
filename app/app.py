@@ -28,7 +28,7 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from scripts.data_fetcher import DataFetcher
-from scripts.config_manager import ConfigManager
+from scripts.utils.config_manager import ConfigManager
 from scripts.prediction_engine import load_data_and_model, preprocess_data, generate_predictions
 from app.config_loader import load_config, load_tickers_and_names, load_benchmark_tickers
 from app.plot_utils import create_stock_plot

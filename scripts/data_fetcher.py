@@ -5,7 +5,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 import logging
 from pathlib import Path
-from scripts.config_manager import ConfigManager
+from scripts.utils.config_manager import ConfigManager
 import yaml
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor

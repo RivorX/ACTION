@@ -4,9 +4,12 @@ import asyncio
 from scripts.data_fetcher import DataFetcher
 from scripts.preprocessor import DataPreprocessor
 from scripts.train import train_model
-from scripts.config_manager import ConfigManager
+from scripts.model import build_model
+from scripts.utils.config_manager import ConfigManager
+from scripts.utils.transfer_weights import transfer_weights
 import logging
 from pathlib import Path
+import torch
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -80,6 +83,39 @@ async def start_training(regions: str = 'global', years: int = 3, use_optuna: bo
         model_name = config['model_name']
         config['paths']['model_save_path'] = str(Path(config['paths']['models_dir']) / f"{model_name}.pth")
         logger.info(f"Ścieżka zapisu modelu: {config['paths']['model_save_path']}")
+
+        # Jeśli nie kontynuujemy treningu, zapytaj o transfer learning
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        if not continue_training:
+            use_transfer_learning = input("Czy użyć transfer learningu z istniejącego modelu? (tak/nie) [domyślnie: nie]: ").lower() or 'nie'
+            if use_transfer_learning == 'tak':
+                old_model_filename = input("Podaj nazwę pliku starego modelu z katalogu models (np. Gen_4_1_mini.pth): ").strip()
+                if not old_model_filename:
+                    logger.error("Nie podano nazwy pliku starego modelu.")
+                    raise ValueError("Nazwa pliku starego modelu nie może być pusta.")
+                
+                # Utwórz pełną ścieżkę do starego modelu
+                models_dir = Path(config['paths']['models_dir'])
+                old_checkpoint_path = models_dir / old_model_filename
+
+                # Sprawdź, czy plik istnieje
+                if not old_checkpoint_path.exists():
+                    logger.error(f"Plik {old_checkpoint_path} nie istnieje w katalogu {models_dir}.")
+                    raise FileNotFoundError(f"Plik {old_checkpoint_path} nie istnieje.")
+
+                # Zbuduj nowy model i przenieś wagi
+                logger.info("Budowanie modelu dla transfer learningu...")
+                new_model = build_model(dataset, config)
+                new_model = transfer_weights(old_checkpoint_path, new_model, device)
+                logger.info("Wagi przeniesione pomyślnie, zapis modelu przed treningiem...")
+                
+                # Zapisz model z przeniesionymi wagami
+                checkpoint = {
+                    'state_dict': new_model.state_dict(),
+                    'hyperparams': dict(new_model.hparams)
+                }
+                torch.save(checkpoint, config['paths']['model_save_path'])
+                logger.info(f"Model z przeniesionymi wagami zapisano w: {config['paths']['model_save_path']}")
 
         # Trenuj model
         logger.info("Trenowanie modelu...")

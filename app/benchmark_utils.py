@@ -10,7 +10,7 @@ import tempfile
 import glob
 import time
 from scripts.data_fetcher import DataFetcher
-from scripts.config_manager import ConfigManager
+from scripts.utils.config_manager import ConfigManager
 from scripts.prediction_engine import load_data_and_model, preprocess_data, generate_predictions
 import torch
 
