@@ -10,12 +10,13 @@ from scripts.utils.transfer_weights import transfer_weights
 import logging
 from pathlib import Path
 import torch
+import shutil
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 def create_directories():
-    directories = ['data', 'models', 'config', 'logs']
+    directories = ['data', 'models', 'config', 'logs', 'models/normalizers']
     for directory in directories:
         if not os.path.exists(directory):
             os.makedirs(directory)
@@ -67,15 +68,17 @@ async def start_training(regions: str = 'global', years: int = 3, use_optuna: bo
             raise ValueError("Nie udało się pobrać danych giełdowych.")
 
         logger.info("Preprocessing danych...")
-        preprocessor = DataPreprocessor(config)
-        dataset = preprocessor.preprocess_data(df)
-
         model_name = config['model_name']
-        config['paths']['model_save_path'] = str(Path(config['paths']['models_dir']) / f"{model_name}.pth")
-        logger.info(f"Ścieżka zapisu modelu: {config['paths']['model_save_path']}")
+        normalizers_path = Path(config['paths']['models_dir']) / 'normalizers' / f"{model_name}_normalizers.pkl"
+        config['data']['normalizers_path'] = str(normalizers_path)
+        logger.info(f"Ścieżka normalizerów: {normalizers_path}")
 
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        if not continue_training:
+        preprocessor = DataPreprocessor(config)
+        
+        # Sprawdź, czy istnieją normalizery dla modelu
+        if continue_training and normalizers_path.exists():
+            logger.info(f"Wczytywanie istniejących normalizerów z {normalizers_path} dla kontynuacji treningu.")
+        elif not continue_training:
             use_transfer_learning = input("Czy użyć transfer learningu z istniejącego modelu? (tak/nie) [domyślnie: nie]: ").lower() or 'nie'
             if use_transfer_learning == 'tak':
                 old_model_filename = input("Podaj nazwę pliku starego modelu z katalogu models (np. Gen_4_1_mini.pth): ").strip()
@@ -85,16 +88,26 @@ async def start_training(regions: str = 'global', years: int = 3, use_optuna: bo
                 
                 models_dir = Path(config['paths']['models_dir'])
                 old_checkpoint_path = models_dir / old_model_filename
+                old_normalizers_path = models_dir / 'normalizers' / f"{old_model_filename.replace('.pth', '')}_normalizers.pkl"
 
                 if not old_checkpoint_path.exists():
                     logger.error(f"Plik {old_checkpoint_path} nie istnieje w katalogu {models_dir}.")
                     raise FileNotFoundError(f"Plik {old_checkpoint_path} nie istnieje.")
+                
+                if not old_normalizers_path.exists():
+                    logger.error(f"Plik normalizerów {old_normalizers_path} nie istnieje.")
+                    raise FileNotFoundError(f"Plik normalizerów {old_normalizers_path} nie istnieje.")
+
+                # Kopiuj normalizery z starego modelu
+                shutil.copy(old_normalizers_path, normalizers_path)
+                logger.info(f"Skopiowano normalizery z {old_normalizers_path} do {normalizers_path}")
 
                 logger.info("Budowanie modelu dla transfer learningu...")
-                new_model = build_model(dataset, config)
-                new_model = transfer_weights(old_checkpoint_path, new_model, device)
+                new_model = build_model(None, config)  # Dataset będzie wczytany później
+                new_model = transfer_weights(old_checkpoint_path, new_model, torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
                 logger.info("Wagi przeniesione pomyślnie, zapis modelu przed treningiem...")
                 
+                config['paths']['model_save_path'] = str(Path(config['paths']['models_dir']) / f"{model_name}.pth")
                 checkpoint = {
                     'state_dict': new_model.state_dict(),
                     'hyperparams': dict(new_model.hparams)
@@ -102,7 +115,14 @@ async def start_training(regions: str = 'global', years: int = 3, use_optuna: bo
                 torch.save(checkpoint, config['paths']['model_save_path'])
                 logger.info(f"Model z przeniesionymi wagami zapisano w: {config['paths']['model_save_path']}")
 
+        dataset = preprocessor.preprocess_data(df)
+        if not continue_training and use_transfer_learning == 'tak':
+            # Wczytaj dataset po preprocessingu z istniejącymi normalizerami
+            logger.info(f"Wczytywanie datasetu z istniejącymi normalizerami z {normalizers_path}")
+            dataset = preprocessor.create_dataset(df, predict_mode=False)
+
         logger.info("Trenowanie modelu...")
+        config['paths']['model_save_path'] = str(Path(config['paths']['models_dir']) / f"{model_name}.pth")
         train_model(dataset, config, use_optuna=use_optuna, continue_training=continue_training)
 
         logger.info("Trening zakończony. Uruchom `streamlit run app.py`, aby użyć aplikacji.")

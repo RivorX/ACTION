@@ -2,7 +2,7 @@
 # Ten plik zawiera ustawienia dla modelu Temporal Fusion Transformer
 
 # Nazwa modelu
-model_name: Gen4_3_mini
+model_name: Gen4_4_mini
 
 # Ustawienia modelu
 model:
@@ -23,12 +23,12 @@ model:
   # Waga dla directional accuracy
   directional_weight: 0.3
   # Zakresy hiperparametrów dla Optuna
-  min_hidden_size: 64
+  min_hidden_size: 32
   max_hidden_size: 128
   min_lstm_layers: 1
-  max_lstm_layers: 2
-  min_attention_head_size: 2
-  max_attention_head_size: 4
+  max_lstm_layers: 8
+  min_attention_head_size: 1
+  max_attention_head_size: 6
   sectors:
     - Technology
     - Healthcare

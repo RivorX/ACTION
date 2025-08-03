@@ -204,52 +204,71 @@ class PreprocessingUtils:
 
     def load_normalizers(self) -> dict:
         """Wczytuje normalizery z pliku."""
-        try:
-            with open(self.normalizers_path, 'rb') as f:
-                normalizers = pickle.load(f)
-            logger.info(f"Wczytano normalizery z: {self.normalizers_path}")
-            return normalizers
-        except Exception as e:
-            logger.error(f"Błąd wczytywania normalizerów: {e}")
+        if self.normalizers_path.exists():
+            try:
+                with open(self.normalizers_path, 'rb') as f:
+                    normalizers = pickle.load(f)
+                logger.info(f"Wczytano normalizery z: {self.normalizers_path}")
+                return normalizers
+            except Exception as e:
+                logger.error(f"Błąd wczytywania normalizerów: {e}")
+                return {}
+        else:
+            logger.info(f"Plik normalizerów {self.normalizers_path} nie istnieje, zwracam pusty słownik")
             return {}
 
-    def preprocess_dataframe(self, df: pd.DataFrame, ticker: str = None, historical_mode: bool = False, trim_days: int = 0) -> pd.DataFrame:
+    def save_normalizers(self, normalizers: dict):
+        """Zapisuje normalizery do pliku, jeśli plik jeszcze nie istnieje."""
+        if not self.normalizers_path.exists():
+            try:
+                with open(self.normalizers_path, 'wb') as f:
+                    pickle.dump(normalizers, f)
+                logger.info(f"Zapisano normalizery do: {self.normalizers_path}")
+            except Exception as e:
+                logger.error(f"Błąd zapisu normalizerów: {e}")
+                raise
+        else:
+            logger.info(f"Plik normalizerów {self.normalizers_path} już istnieje, pomijam zapis")
+
+    def preprocess_dataframe(self, df: pd.DataFrame, ticker: str = None, historical_mode: bool = False, trim_days: int = 0) -> tuple:
         """Preprocesuje ramkę danych, dodając cechy i normalizując."""
         if df.empty:
             raise ValueError("Ramka danych jest pusta.")
 
         if ticker:
             df = df[df['Ticker'] == ticker].copy().reset_index(drop=True)
-        
+        else:
+            df = df.copy().reset_index(drop=True)  # Reset indeksów na początku
+
         # Zapisz oryginalne Close przed preprocessingiem
         original_close = df['Close'].copy()
         logger.info(f"Początkowa długość df: {len(df)}, original_close: {len(original_close)}")
         
         if historical_mode and trim_days > 0:
-            df = df.iloc[:-trim_days].copy()
+            df = df.iloc[:-trim_days].copy().reset_index(drop=True)
             original_close = original_close.iloc[:-trim_days].copy()
             logger.info(f"Po przycięciu (historical_mode): df: {len(df)}, original_close: {len(original_close)}")
 
         # Dodaj cechy
-        df = self.feature_engineer.add_features(df)
+        df = self.feature_engineer.add_features(df).reset_index(drop=True)
         logger.info(f"Po add_features: df: {len(df)}")
         
         # Zachowaj oryginalne indeksy przed dropna
         original_indices = df.index
-        df = df.dropna(subset=['Close', 'Open', 'High', 'Low', 'Volume'])
+        df = df.dropna(subset=['Close', 'Open', 'High', 'Low', 'Volume']).reset_index(drop=True)
         logger.info(f"Po dropna: df: {len(df)}, usunięto rekordy: {set(original_indices) - set(df.index)}")
         # Dopasuj original_close do przefiltrowanych indeksów
-        original_close = original_close.loc[df.index]
+        original_close = original_close.loc[original_indices].reindex(df.index).fillna(0)
         
-        df = df[(df['Close'] > 0) & (df['High'] >= df['Low'])]
+        df = df[(df['Close'] > 0) & (df['High'] >= df['Low'])].reset_index(drop=True)
         logger.info(f"Po filtrze Close > 0 i High >= Low: df: {len(df)}")
         # Ponownie dopasuj original_close
-        original_close = original_close.loc[df.index]
+        original_close = original_close.reindex(df.index).fillna(0)
         
-        df = self.feature_engineer.remove_outliers(df, 'Close')
+        df = self.feature_engineer.remove_outliers(df, 'Close').reset_index(drop=True)
         logger.info(f"Po remove_outliers: df: {len(df)}")
         # Ostateczne dopasowanie original_close
-        original_close = original_close.loc[df.index]
+        original_close = original_close.reindex(df.index).fillna(0)
         logger.info(f"Ostateczna długość df: {len(df)}, original_close: {len(original_close)}")
 
         # Ustaw kategorie i time_idx
@@ -268,9 +287,19 @@ class PreprocessingUtils:
 
         # Normalizacja
         normalizers = self.load_normalizers()
+        new_normalizers = {}
         for feature in self.numeric_features:
-            if feature in df.columns and feature in normalizers:
-                df[feature] = normalizers[feature].transform(df[feature].values)
+            if feature in df.columns:
+                if feature in normalizers:
+                    df[feature] = normalizers[feature].transform(df[feature].values)
+                else:
+                    normalizer = TorchNormalizer()
+                    df[feature] = normalizer.fit_transform(df[feature].values)
+                    new_normalizers[feature] = normalizer
+
+        # Zapisz nowe normalizery, jeśli istnieją
+        if new_normalizers:
+            self.save_normalizers(new_normalizers)
 
         # Konwersja kategorycznych
         for cat_col in self.categorical_features:

@@ -12,6 +12,7 @@ import asyncio
 import aiohttp
 import os
 import time
+from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -67,9 +68,14 @@ async def load_data_and_model_async(config, ticker, temp_raw_data_path, historic
         model_load_time = time.time()
         model_name = config['model_name']
         model_path = os.path.join(config['paths']['models_dir'], f"{model_name}.pth")
+        normalizers_path = os.path.join(config['paths']['models_dir'], 'normalizers', f"{model_name}_normalizers.pkl")
+        config['data']['normalizers_path'] = normalizers_path
         if not os.path.exists(model_path):
             logger.error(f"Plik modelu {model_path} nie istnieje.")
             raise FileNotFoundError(f"Plik modelu {model_path} nie istnieje.")
+        if not os.path.exists(normalizers_path):
+            logger.error(f"Plik normalizerów {normalizers_path} nie istnieje.")
+            raise FileNotFoundError(f"Plik normalizerów {normalizers_path} nie istnieje.")
 
         checkpoint = torch.load(model_path, map_location=device, weights_only=False)
         hyperparams = checkpoint["hyperparams"]
@@ -104,6 +110,8 @@ def preprocess_data(config, ticker_data, ticker, normalizers, historical_mode=Fa
     start_time = time.time()
     preprocessing_utils = PreprocessingUtils(config)
     ticker_data, original_close = preprocessing_utils.preprocess_dataframe(ticker_data, ticker, historical_mode, trim_days)
+    ticker_data = ticker_data.reset_index(drop=True)  # Reset indeksów
+    original_close = original_close.reindex(ticker_data.index).fillna(0)  # Dopasuj original_close
     total_duration = time.time() - start_time
     logger.info(f"Całkowity czas preprocess_data: {total_duration:.3f} sekundy")
     return ticker_data, original_close

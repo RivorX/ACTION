@@ -70,22 +70,23 @@ def objective(trial, train_dataset: TimeSeriesDataSet, val_dataset: TimeSeriesDa
 def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = True, continue_training: bool = False):
     logger.info("Rozpoczynanie treningu modelu...")
     
-    df = pd.read_csv(config['data']['raw_data_path'])
+    df = pd.read_csv(config['data']['raw_data_path']).reset_index(drop=True)  # Reset indeksów
     selected_tickers = config['data']['tickers']
-    df = df[df['Ticker'].isin(selected_tickers)]
+    df = df[df['Ticker'].isin(selected_tickers)].reset_index(drop=True)  # Reset indeksów
     if df.empty:
         raise ValueError(f"Brak danych dla wybranych tickerów: {selected_tickers}")
 
     preprocessing_utils = PreprocessingUtils(config)
     df, _ = preprocessing_utils.preprocess_dataframe(df)
+    df = df.reset_index(drop=True)  # Reset indeksów po preprocessingu
 
     min_val_records = config['model'].get('min_prediction_length', 1) + config['model'].get('min_encoder_length', 1)
     group_counts = df.groupby('group_id').size().reset_index(name='count')
     valid_groups = group_counts[group_counts['count'] >= min_val_records]['group_id']
-    df = df[df['group_id'].isin(valid_groups)]
+    df = df[df['group_id'].isin(valid_groups)].reset_index(drop=True)  # Reset indeksów
 
-    train_df = df[df['time_idx'] <= int(df['time_idx'].max() * 0.8)]
-    val_df = df[df['time_idx'] > int(df['time_idx'].max() * 0.8)]
+    train_df = df[df['time_idx'] <= int(df['time_idx'].max() * 0.8)].reset_index(drop=True)  # Reset indeksów
+    val_df = df[df['time_idx'] > int(df['time_idx'].max() * 0.8)].reset_index(drop=True)  # Reset indeksów
     
     if df.empty or train_df.empty or val_df.empty:
         raise ValueError(f"Zbiory danych są puste po filtrowaniu: df={len(df)}, train_df={len(train_df)}, val_df={len(val_df)}")
@@ -101,17 +102,9 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logger.info(f"Używane urządzenie: {device}")
 
-    if use_optuna and not continue_training:
-        study = optuna.create_study(direction="minimize")
-        study.optimize(lambda trial: objective(trial, train_dataset, val_dataset, config), n_trials=config['training']['optuna_trials'])
-        best_params = study.best_params
-        logger.info(f"Najlepsze parametry: {best_params}")
-    else:
-        best_params = None
-        logger.info("Pomijanie optymalizacji Optuna, używanie domyślnych hiperparametrów.")
-
     model_save_path = Path(config['paths']['model_save_path'])
     logger.info(f"Ścieżka do modelu: {model_save_path}, istnieje: {model_save_path.exists()}")
+    
     if continue_training and model_save_path.exists():
         logger.info(f"Wczytywanie modelu z {model_save_path}")
         checkpoint = torch.load(model_save_path, map_location=torch.device('cpu'), weights_only=False)
@@ -130,7 +123,7 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
             raise
     else:
         logger.info("Brak modelu lub kontynuacja wyłączona, trenowanie od zera")
-        final_model = build_model(dataset, config, hyperparams=best_params)
+        final_model = build_model(dataset, config, hyperparams=None if not use_optuna else None)
 
     trainer = pl.Trainer(
         max_epochs=config['training']['max_epochs'],

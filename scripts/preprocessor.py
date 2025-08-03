@@ -16,4 +16,5 @@ class DataPreprocessor:
 
     def preprocess_data(self, df: pd.DataFrame) -> TimeSeriesDataSet:
         df, _ = self.preprocessing_utils.preprocess_dataframe(df)
-        return self.preprocessing_utils.create_dataset(df)
+        dataset = self.preprocessing_utils.create_dataset(df)
+        return dataset

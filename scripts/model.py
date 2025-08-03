@@ -315,10 +315,10 @@ class CustomTemporalFusionTransformer(LightningModule):
                     if close_normalizer is not None:
                         try:
                             numeric_features = [
-                                "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI", "Volatility",
+                                "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI",
                                 "MACD", "MACD_Signal", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
-                                "Close_momentum_1d", "Close_momentum_5d", "Close_vs_MA10", "Close_vs_MA50",
-                                "Close_percentile_20d", "Close_volatility_5d", "Close_RSI_divergence"
+                                "ADX", "CCI", "Tenkan_sen", "Kijun_sen", "Senkou_Span_A", "Senkou_Span_B", "ROC", "VWAP",
+                                "Momentum_20d", "Close_to_MA_ratio", "BB_width", "Close_to_BB_upper", "Close_to_BB_lower"
                             ]
                             close_idx = numeric_features.index("Close") if "Close" in numeric_features else None
                             
