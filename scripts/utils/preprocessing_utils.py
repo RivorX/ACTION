@@ -6,8 +6,8 @@ import logging
 from pathlib import Path
 from pytorch_forecasting.data import TimeSeriesDataSet, NaNLabelEncoder
 from scripts.utils.config_manager import ConfigManager
-import torch
 from pytorch_forecasting.data.encoders import TorchNormalizer
+from sklearn.preprocessing import RobustScaler
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -185,17 +185,15 @@ class PreprocessingUtils:
             return {}
 
     def save_normalizers(self, normalizers: dict):
-        """Zapisuje normalizery do pliku, jeśli plik jeszcze nie istnieje."""
-        if not self.normalizers_path.exists():
-            try:
-                with open(self.normalizers_path, 'wb') as f:
-                    pickle.dump(normalizers, f)
-                logger.info(f"Zapisano normalizery do: {self.normalizers_path}")
-            except Exception as e:
-                logger.error(f"Błąd zapisu normalizerów: {e}")
-                raise
-        else:
-            logger.info(f"Plik normalizerów {self.normalizers_path} już istnieje, pomijam zapis")
+        """Zapisuje normalizery do pliku."""
+        try:
+            self.normalizers_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.normalizers_path, 'wb') as f:
+                pickle.dump(normalizers, f)
+            logger.info(f"Zapisano normalizery do: {self.normalizers_path}")
+        except Exception as e:
+            logger.error(f"Błąd zapisu normalizerów: {e}")
+            raise
 
     def preprocess_dataframe(self, df: pd.DataFrame, ticker: str = None, historical_mode: bool = False, trim_days: int = 0) -> tuple:
         """Preprocesuje ramkę danych, dodając cechy i normalizując."""
@@ -205,9 +203,8 @@ class PreprocessingUtils:
         if ticker:
             df = df[df['Ticker'] == ticker].copy().reset_index(drop=True)
         else:
-            df = df.copy().reset_index(drop=True)  # Reset indeksów na początku
+            df = df.copy().reset_index(drop=True)
 
-        # Zapisz oryginalne Close przed preprocessingiem
         original_close = df['Close'].copy()
         logger.info(f"Początkowa długość df: {len(df)}, original_close: {len(original_close)}")
         
@@ -216,29 +213,23 @@ class PreprocessingUtils:
             original_close = original_close.iloc[:-trim_days].copy()
             logger.info(f"Po przycięciu (historical_mode): df: {len(df)}, original_close: {len(original_close)}")
 
-        # Dodaj cechy
         df = self.feature_engineer.add_features(df).reset_index(drop=True)
         logger.info(f"Po add_features: df: {len(df)}")
         
-        # Zachowaj oryginalne indeksy przed dropna
         original_indices = df.index
         df = df.dropna(subset=['Close', 'Open', 'High', 'Low', 'Volume']).reset_index(drop=True)
         logger.info(f"Po dropna: df: {len(df)}, usunięto rekordy: {set(original_indices) - set(df.index)}")
-        # Dopasuj original_close do przefiltrowanych indeksów
         original_close = original_close.loc[original_indices].reindex(df.index).fillna(0)
         
         df = df[(df['Close'] > 0) & (df['High'] >= df['Low'])].reset_index(drop=True)
         logger.info(f"Po filtrze Close > 0 i High >= Low: df: {len(df)}")
-        # Ponownie dopasuj original_close
         original_close = original_close.reindex(df.index).fillna(0)
         
         df = self.feature_engineer.remove_outliers(df, 'Close').reset_index(drop=True)
         logger.info(f"Po remove_outliers: df: {len(df)}")
-        # Ostateczne dopasowanie original_close
         original_close = original_close.reindex(df.index).fillna(0)
         logger.info(f"Ostateczna długość df: {len(df)}, original_close: {len(original_close)}")
 
-        # Ustaw kategorie i time_idx
         df['Date'] = pd.to_datetime(df['Date'], utc=True)
         df['time_idx'] = (df['Date'] - df['Date'].min()).dt.days.astype(int)
         df['group_id'] = df['Ticker']
@@ -254,21 +245,72 @@ class PreprocessingUtils:
 
         # Normalizacja
         normalizers = self.load_normalizers()
-        new_normalizers = {}
-        for feature in self.numeric_features:
-            if feature in df.columns:
-                if feature in normalizers:
-                    df[feature] = normalizers[feature].transform(df[feature].values)
-                else:
-                    normalizer = TorchNormalizer()
-                    df[feature] = normalizer.fit_transform(df[feature].values)
-                    new_normalizers[feature] = normalizer
+        new_normalizers = normalizers.copy() if normalizers else {}
+        
+        if ticker:  # Normalizacja dla pojedynczej spółki
+            ticker_normalizers = normalizers.get(ticker, {})
+            for feature in self.numeric_features:
+                if feature in df.columns:
+                    if feature == 'Relative_Returns':
+                        # Używamy TorchNormalizer dla Relative_Returns
+                        if feature in ticker_normalizers:
+                            df[feature] = ticker_normalizers[feature].transform(df[feature].values)
+                        else:
+                            normalizer = TorchNormalizer(method='standard')
+                            df[feature] = normalizer.fit_transform(df[feature].values)
+                            ticker_normalizers[feature] = normalizer
+                    else:
+                        # Używamy RobustScaler dla pozostałych cech
+                        if feature in ticker_normalizers:
+                            df[feature] = ticker_normalizers[feature].transform(df[feature].values.reshape(-1, 1)).flatten()
+                        else:
+                            normalizer = RobustScaler()
+                            df[feature] = normalizer.fit_transform(df[feature].values.reshape(-1, 1)).flatten()
+                            ticker_normalizers[feature] = normalizer
+            new_normalizers[ticker] = ticker_normalizers
+        else:  # Normalizacja dla wielu spółek i globalnego normalizera
+            global_normalizers = normalizers.get('global', {})
+            for feature in self.numeric_features:
+                if feature in df.columns:
+                    ticker_groups = df.groupby('Ticker')
+                    for ticker_name, group in ticker_groups:
+                        ticker_normalizers = normalizers.get(ticker_name, {})
+                        if feature == 'Relative_Returns':
+                            if feature in ticker_normalizers:
+                                df.loc[df['Ticker'] == ticker_name, feature] = ticker_normalizers[feature].transform(group[feature].values)
+                            else:
+                                normalizer = TorchNormalizer(method='standard')
+                                df.loc[df['Ticker'] == ticker_name, feature] = normalizer.fit_transform(group[feature].values)
+                                ticker_normalizers[feature] = normalizer
+                        else:
+                            if feature in ticker_normalizers:
+                                df.loc[df['Ticker'] == ticker_name, feature] = ticker_normalizers[feature].transform(group[feature].values.reshape(-1, 1)).flatten()
+                            else:
+                                normalizer = RobustScaler()
+                                df.loc[df['Ticker'] == ticker_name, feature] = normalizer.fit_transform(group[feature].values.reshape(-1, 1)).flatten()
+                                ticker_normalizers[feature] = normalizer
+                        new_normalizers[ticker_name] = ticker_normalizers
+                    
+                    # Aktualizacja globalnego normalizera
+                    if feature == 'Relative_Returns':
+                        if feature in global_normalizers:
+                            df[feature] = global_normalizers[feature].transform(df[feature].values)
+                        else:
+                            global_normalizer = TorchNormalizer(method='standard')
+                            df[feature] = global_normalizer.fit_transform(df[feature].values)
+                            global_normalizers[feature] = global_normalizer
+                    else:
+                        if feature in global_normalizers:
+                            df[feature] = global_normalizers[feature].transform(df[feature].values.reshape(-1, 1)).flatten()
+                        else:
+                            global_normalizer = RobustScaler()
+                            df[feature] = global_normalizer.fit_transform(df[feature].values.reshape(-1, 1)).flatten()
+                            global_normalizers[feature] = global_normalizer
+            new_normalizers['global'] = global_normalizers
 
-        # Zapisz nowe normalizery, jeśli istnieją
-        if new_normalizers:
-            self.save_normalizers(new_normalizers)
+        # Zapisz normalizery
+        self.save_normalizers(new_normalizers)
 
-        # Konwersja kategorycznych
         for cat_col in self.categorical_features:
             if cat_col in df.columns:
                 df[cat_col] = df[cat_col].astype(str)
@@ -282,7 +324,7 @@ class PreprocessingUtils:
         normalizers = self.load_normalizers()
         valid_numeric_features = [
             f for f in self.numeric_features 
-            if f in df.columns and f in normalizers and not df[f].isna().any() and not np.isinf(df[f]).any()
+            if f in df.columns and not df[f].isna().any() and not np.isinf(df[f]).any()
         ]
         valid_categorical_features = [f for f in self.categorical_features if f in df.columns]
 
@@ -298,7 +340,7 @@ class PreprocessingUtils:
             "time_varying_known_reals": [f for f in valid_numeric_features if f not in ["Relative_Returns", "Log_Returns", "Future_Volume", "Future_Volatility"]],
             "time_varying_known_categoricals": valid_categorical_features,
             "time_varying_unknown_reals": ["Relative_Returns"],
-            "target_normalizer": normalizers.get("Relative_Returns", TorchNormalizer()),
+            "target_normalizer": normalizers.get('global', {}).get("Relative_Returns", TorchNormalizer(method='standard')),
             "allow_missing_timesteps": True,
             "add_encoder_length": False,
             "categorical_encoders": {
