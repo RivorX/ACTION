@@ -58,6 +58,7 @@ class StockPredictor:
     def __init__(self, config, years):
         self.config = config
         self.years = years
+        self.max_prediction_length = config['model']['max_prediction_length']  # Pobierz z config
         self.fetcher = DataFetcher(ConfigManager(), years)
         self.temp_dir = os.path.join(project_root, 'data', 'temp')
         os.makedirs(self.temp_dir, exist_ok=True)
@@ -161,6 +162,7 @@ def main():
     config_manager = ConfigManager()  # Singleton
     config = config_manager.config
     years = config['prediction']['years']
+    max_prediction_length = config['model']['max_prediction_length']  # Pobierz z config
 
     predictor = StockPredictor(config, years)
     benchmark_tickers = load_benchmark_tickers(config)
@@ -213,7 +215,6 @@ def main():
         if st.button("Porównaj predykcje z historią"):
             with st.spinner('Trwa porównywanie predykcji z historią...'):
                 try:
-                    max_prediction_length = config['model']['max_prediction_length']
                     trim_date = pd.Timestamp(datetime.now(), tz='UTC') - pd.Timedelta(days=max_prediction_length)
                     start_date = trim_date - pd.Timedelta(days=years * 365)
                     

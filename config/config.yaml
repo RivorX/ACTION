@@ -2,11 +2,11 @@
 # Ten plik zawiera ustawienia dla modelu Temporal Fusion Transformer
 
 # Nazwa modelu
-model_name: Gen4_4_mini
+model_name: Gen4_5_mini
 
 # Ustawienia modelu
 model:
-  max_prediction_length: 90  # Maksymalna długość predykcji (dni)
+  max_prediction_length: 30  # Maksymalna długość predykcji (dni)
   min_encoder_length: 50     # Minimalna długość danych wejściowych
   max_encoder_length: 180    # Maksymalna długość danych historycznych
   hidden_size: 128           # Rozmiar warstwy ukrytej
@@ -26,7 +26,7 @@ model:
   min_hidden_size: 32
   max_hidden_size: 128
   min_lstm_layers: 1
-  max_lstm_layers: 8
+  max_lstm_layers: 5
   min_attention_head_size: 1
   max_attention_head_size: 6
   sectors:
@@ -48,8 +48,8 @@ training:
   max_epochs: 100               # Maksymalna liczba epok
   batch_size: 64                # Rozmiar partii dla treningu
   early_stopping_patience: 10   # Cierpliwość dla wczesnego zatrzymania
-  optuna_trials: 5              # Liczba prób dla optymalizacji hiperparametrów
-  reduce_lr_patience: 3         # Cierpliwość dla redukcji współczynnika uczenia
+  optuna_trials: 10             # Liczba prób dla optymalizacji hiperparametrów
+  reduce_lr_patience: 2         # Cierpliwość dla redukcji współczynnika uczenia
   reduce_lr_factor: 0.6         # Czynnik redukcji współczynnika uczenia
   weight_decay: 0.12            # Współczynnik weight decay
 

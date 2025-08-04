@@ -56,8 +56,9 @@ def create_stock_plot(config, ticker_data, original_close, median, lower_bound, 
     Returns:
         None: Displays the plot and optional prediction table in Streamlit.
     """
+    max_prediction_length = config['model']['max_prediction_length']  # Pobierz z config
     last_date = ticker_data['Date'].iloc[-1].to_pydatetime()
-    pred_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=config['model']['max_prediction_length'], freq='D')
+    pred_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=max_prediction_length, freq='D')
     historical_dates = ticker_data['Date'].tolist()
 
     if historical_close is not None:
