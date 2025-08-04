@@ -9,7 +9,7 @@ model:
   max_prediction_length: 30  # Maksymalna długość predykcji (dni)
   min_encoder_length: 50     # Minimalna długość danych wejściowych
   max_encoder_length: 180    # Maksymalna długość danych historycznych
-  hidden_size: 64             # Rozmiar warstwy ukrytej
+  hidden_size: 64            # Rozmiar warstwy ukrytej
   attention_head_size: 4     # Liczba głowic uwagi
   dropout: 0.3               # Współczynnik dropout dla stabilności
   learning_rate: 0.001       # Współczynnik uczenia
@@ -29,6 +29,23 @@ model:
   max_lstm_layers: 4
   min_attention_head_size: 1
   max_attention_head_size: 6
+  min_learning_rate: 0.0001  # Dolny zakres dla learning_rate
+  max_learning_rate: 0.01     # Górny zakres dla learning_rate
+  min_dropout: 0.1           # Dolny zakres dla dropout
+  max_dropout: 0.3           # Górny zakres dla dropout
+  min_hidden_continuous_size: 16   # Dolny zakres dla hidden_continuous_size
+  max_hidden_continuous_size: 128  # Górny zakres dla hidden_continuous_size
+  min_weight_start: 1.0      # Dolny zakres dla weight_start
+  max_weight_start: 1.2      # Górny zakres dla weight_start
+  min_weight_end: 1.3        # Dolny zakres dla weight_end
+  max_weight_end: 2.0        # Górny zakres dla weight_end
+  min_directional_weight: 0.1  # Dolny zakres dla directional_weight
+  max_directional_weight: 0.5  # Górny zakres dla directional_weight
+  log_interval: 10           # Interwał logowania
+  embedding_sizes:           # Rozmiary embeddingów dla zmiennych kategorycznych
+    Sector: [12, 5]
+    Day_of_Week: [7, 5]
+    Month: [12, 5]
   sectors:
     - Technology
     - Healthcare
@@ -46,7 +63,7 @@ model:
 # Ustawienia treningu
 training:
   max_epochs: 100               # Maksymalna liczba epok
-  batch_size: 256                # Rozmiar partii dla treningu
+  batch_size: 256               # Rozmiar partii dla treningu
   early_stopping_patience: 10   # Cierpliwość dla wczesnego zatrzymania
   optuna_trials: 10             # Liczba prób dla optymalizacji hiperparametrów
   reduce_lr_patience: 3         # Cierpliwość dla redukcji współczynnika uczenia

@@ -8,6 +8,7 @@ import torch
 import aiohttp
 import os
 import sys
+import json
 
 # Dodaj katalog główny do ścieżek systemowych
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
@@ -34,8 +35,14 @@ class DataAnalyzer:
         self.config = config
         self.years = years
         self.config_manager = ConfigManager()
+        # Pobierz nazwę modelu z configu
+        model_name = config['model_name']
+        # Ustaw ścieżkę normalizerów na podstawie nazwy modelu
+        normalizers_path = Path(f"models/normalizers/{model_name}_normalizers.pkl")
+        self.config['data']['normalizers_path'] = str(normalizers_path)
+        logger.info(f"Ścieżka normalizerów ustawiona na: {normalizers_path}")
         self.data_fetcher = DataFetcher(self.config_manager, years=years)
-        self.preprocessing_utils = PreprocessingUtils(config)
+        self.preprocessing_utils = PreprocessingUtils(self.config)
         self.output_dir = Path('logs/debug')
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.numeric_features = [
@@ -108,18 +115,26 @@ class DataAnalyzer:
         # Sprawdzenie spójności normalizerów
         normalizers = self.preprocessing_utils.load_normalizers()
         for feature in self.numeric_features:
-            if feature in normalizers and feature in df_processed.columns:
-                normalizer = normalizers[feature]
-                try:
-                    transformed = normalizer.transform(df_processed[feature].values)
-                    analysis_results[feature]['Normalizer_stats'] = {
-                        'Mean_transformed': float(np.mean(transformed)),
-                        'Std_transformed': float(np.std(transformed)),
-                        'NaN_transformed': np.isnan(transformed).sum(),
-                        'Inf_transformed': np.isinf(transformed).sum()
-                    }
-                except Exception as e:
-                    analysis_results[feature]['Normalizer_error'] = str(e)
+            if feature in df_processed.columns:
+                # Wybierz odpowiedni normalizer: per ticker lub globalny
+                normalizer_key = ticker if ticker and ticker in normalizers else 'global'
+                if normalizer_key in normalizers and feature in normalizers[normalizer_key]:
+                    normalizer = normalizers[normalizer_key][feature]
+                    try:
+                        transformed = normalizer.transform(df_processed[feature].values)
+                        analysis_results[feature]['Normalizer_stats'] = {
+                            'Mean_transformed': float(np.mean(transformed)),
+                            'Std_transformed': float(np.std(transformed)),
+                            'NaN_transformed': np.isnan(transformed).sum(),
+                            'Inf_transformed': np.isinf(transformed).sum()
+                        }
+                        logger.info(f"Normalizer dla {feature} ({normalizer_key}) zastosowany poprawnie")
+                    except Exception as e:
+                        analysis_results[feature]['Normalizer_error'] = str(e)
+                        logger.error(f"Błąd podczas stosowania normalizera dla {feature} ({normalizer_key}): {e}")
+                else:
+                    analysis_results[feature]['Normalizer_error'] = f"Brak normalizera dla {feature} w {normalizer_key}"
+                    logger.warning(f"Brak normalizera dla {feature} w {normalizer_key}")
 
         return analysis_results
 
@@ -158,7 +173,6 @@ class DataAnalyzer:
 
     def save_results(self, results: dict, filename: str):
         """Zapisuje wyniki analizy do pliku JSON."""
-        import json
         output_path = self.output_dir / filename
         with open(output_path, 'w') as f:
             json.dump(results, f, indent=2, default=str)

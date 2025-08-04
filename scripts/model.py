@@ -38,16 +38,40 @@ class ModelConfig:
     """Klasa zarządzająca konfiguracją modelu."""
     def __init__(self, config: Dict[str, Any]):
         self.config = config
+        # Lista wymaganych kluczy w config['model']
+        required_model_keys = [
+            'min_hidden_size', 'max_hidden_size', 'min_lstm_layers', 'max_lstm_layers',
+            'min_attention_head_size', 'max_attention_head_size', 'min_learning_rate', 'max_learning_rate',
+            'min_dropout', 'max_dropout', 'min_hidden_continuous_size', 'max_hidden_continuous_size',
+            'min_weight_start', 'max_weight_start', 'min_weight_end', 'max_weight_end',
+            'min_directional_weight', 'max_directional_weight', 'quantiles', 'use_quantile_loss',
+            'log_interval', 'embedding_sizes'
+        ]
+        # Lista wymaganych kluczy w config['training']
+        required_training_keys = ['early_stopping_patience']
+        
+        # Sprawdzenie brakujących kluczy w config['model']
+        missing_model_keys = [key for key in required_model_keys if key not in config['model']]
+        if missing_model_keys:
+            raise ValueError(f"Brak wymaganych kluczy w config['model']: {missing_model_keys}")
+        
+        # Sprawdzenie brakujących kluczy w config['training']
+        missing_training_keys = [key for key in required_training_keys if key not in config['training']]
+        if missing_training_keys:
+            raise ValueError(f"Brak wymaganych kluczy w config['training']: {missing_training_keys}")
+        
+        # Sprawdzenie, czy embedding_sizes zawiera wszystkie wymagane kategorie
+        required_embedding_keys = ['Sector', 'Day_of_Week', 'Month']
+        missing_embedding_keys = [key for key in required_embedding_keys if key not in config['model']['embedding_sizes']]
+        if missing_embedding_keys:
+            raise ValueError(f"Brak wymaganych kluczy w config['model']['embedding_sizes']: {missing_embedding_keys}")
+        
         self.use_quantile_loss = config['model']['use_quantile_loss']
-        self.quantiles = config['model']['quantiles'] if self.use_quantile_loss else None
+        self.quantiles = config['model']['quantiles']
         self.weight_start = config['model']['weight_start']
         self.weight_end = config['model']['weight_end']
         self.directional_weight = config['model']['directional_weight']
-        self.embedding_sizes = {
-            'Sector': (12, 5),
-            'Day_of_Week': (7, 5),
-            'Month': (12, 5)
-        }
+        self.embedding_sizes = config['model']['embedding_sizes']
         self.default_hyperparams = self._get_default_hyperparams()
 
     def _get_default_hyperparams(self) -> Dict[str, Any]:
@@ -60,7 +84,7 @@ class ModelConfig:
             "hidden_continuous_size": self.config['model']['hidden_size'] // 2,
             "output_size": len(self.quantiles) if self.use_quantile_loss else 1,
             "loss": QuantileLoss(quantiles=self.quantiles) if self.use_quantile_loss else MAE(),
-            "log_interval": 10,
+            "log_interval": self.config['model']['log_interval'],
             "reduce_on_plateau_patience": self.config['training']['early_stopping_patience'],
             "learning_rate": self.config['model']['learning_rate'],
             "embedding_sizes": self.embedding_sizes,
@@ -85,19 +109,19 @@ class HyperparamFactory:
         """Generuje hiperparametry z trialu Optuna."""
         return {
             "hidden_size": trial.suggest_int("hidden_size", config.config['model']['min_hidden_size'], config.config['model']['max_hidden_size']),
-            "learning_rate": trial.suggest_float("learning_rate", 1e-4, 1e-1, log=True),
+            "learning_rate": trial.suggest_float("learning_rate", config.config['model']['min_learning_rate'], config.config['model']['max_learning_rate'], log=True),
             "attention_head_size": trial.suggest_int("attention_head_size", config.config['model']['min_attention_head_size'], config.config['model']['max_attention_head_size']),
-            "dropout": trial.suggest_float("dropout", 0.1, 0.3),
+            "dropout": trial.suggest_float("dropout", config.config['model']['min_dropout'], config.config['model']['max_dropout']),
             "lstm_layers": trial.suggest_int("lstm_layers", config.config['model']['min_lstm_layers'], config.config['model']['max_lstm_layers']),
-            "hidden_continuous_size": trial.suggest_int("hidden_continuous_size", 8, config.config['model']['max_hidden_size']),
+            "hidden_continuous_size": trial.suggest_int("hidden_continuous_size", config.config['model']['min_hidden_continuous_size'], config.config['model']['max_hidden_continuous_size']),
             "output_size": len(config.quantiles) if config.use_quantile_loss else 1,
             "loss": QuantileLoss(quantiles=config.quantiles) if config.use_quantile_loss else MAE(),
-            "log_interval": 10,
+            "log_interval": config.config['model']['log_interval'],
             "reduce_on_plateau_patience": config.config['training']['early_stopping_patience'],
             "embedding_sizes": config.embedding_sizes,
-            "weight_start": trial.suggest_float("weight_start", 1.0, 1.2),
-            "weight_end": trial.suggest_float("weight_end", 1.3, 2.0),
-            "directional_weight": trial.suggest_float("directional_weight", 0.1, 0.5)
+            "weight_start": trial.suggest_float("weight_start", config.config['model']['min_weight_start'], config.config['model']['max_weight_start']),
+            "weight_end": trial.suggest_float("weight_end", config.config['model']['min_weight_end'], config.config['model']['max_weight_end']),
+            "directional_weight": trial.suggest_float("directional_weight", config.config['model']['min_directional_weight'], config.config['model']['max_directional_weight'])
         }
 
     @staticmethod
