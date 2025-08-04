@@ -45,6 +45,7 @@ def objective(trial, train_dataset: TimeSeriesDataSet, val_dataset: TimeSeriesDa
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
         devices=1,
         precision="16-mixed" if torch.cuda.is_available() else "32-true",
+        gradient_clip_val=config['training']['gradient_clip_val'],  # Odczyt z configu
         callbacks=[
             EarlyStopping(monitor="val_combined_metric", patience=config['training']['early_stopping_patience'], mode="min"),
             CustomModelCheckpoint(monitor="val_combined_metric", save_path=config['paths']['model_save_path'], mode="min")
@@ -130,6 +131,7 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
         devices=1,
         precision="16-mixed" if torch.cuda.is_available() else "32-true",
+        gradient_clip_val=config['training']['gradient_clip_val'],  # Odczyt z configu
         callbacks=[
             EarlyStopping(monitor="val_combined_metric", patience=config['training']['early_stopping_patience'], mode="min"),
             CustomModelCheckpoint(monitor="val_combined_metric", save_path=config['paths']['model_save_path'], mode="min")

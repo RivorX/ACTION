@@ -2,31 +2,31 @@
 # Ten plik zawiera ustawienia dla modelu Temporal Fusion Transformer
 
 # Nazwa modelu
-model_name: Gen4_5_mini
+model_name: Gen5_0
 
 # Ustawienia modelu
 model:
   max_prediction_length: 30  # Maksymalna długość predykcji (dni)
   min_encoder_length: 50     # Minimalna długość danych wejściowych
   max_encoder_length: 180    # Maksymalna długość danych historycznych
-  hidden_size: 128           # Rozmiar warstwy ukrytej
+  hidden_size: 64             # Rozmiar warstwy ukrytej
   attention_head_size: 4     # Liczba głowic uwagi
   dropout: 0.3               # Współczynnik dropout dla stabilności
   learning_rate: 0.001       # Współczynnik uczenia
-  lstm_layers: 2             # Liczba warstw LSTM
+  lstm_layers: 3             # Liczba warstw LSTM
   loss: QuantileLoss         # Funkcja straty
   use_quantile_loss: true    # Włączenie straty kwantylowej
   quantiles: [0.1, 0.5, 0.9] # Kwantyle dla predykcji
   # Wagi czasowe
   weight_start: 1.0
-  weight_end: 1.5
+  weight_end: 1.2
   # Waga dla directional accuracy
   directional_weight: 0.3
   # Zakresy hiperparametrów dla Optuna
   min_hidden_size: 32
   max_hidden_size: 128
   min_lstm_layers: 1
-  max_lstm_layers: 5
+  max_lstm_layers: 4
   min_attention_head_size: 1
   max_attention_head_size: 6
   sectors:
@@ -49,9 +49,10 @@ training:
   batch_size: 64                # Rozmiar partii dla treningu
   early_stopping_patience: 10   # Cierpliwość dla wczesnego zatrzymania
   optuna_trials: 10             # Liczba prób dla optymalizacji hiperparametrów
-  reduce_lr_patience: 2         # Cierpliwość dla redukcji współczynnika uczenia
+  reduce_lr_patience: 3         # Cierpliwość dla redukcji współczynnika uczenia
   reduce_lr_factor: 0.6         # Czynnik redukcji współczynnika uczenia
-  weight_decay: 0.12            # Współczynnik weight decay
+  weight_decay: 0.05            # Współczynnik weight decay
+  gradient_clip_val: 0.5        # Wartość klipu gradientu
 
 # Ustawienia walidacji
 validation:

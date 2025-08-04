@@ -72,17 +72,8 @@ class FeatureEngineer:
         return adx
 
     @staticmethod
-    def calculate_cci(group: pd.DataFrame, period: int = 20) -> pd.Series:
-        """Oblicza Commodity Channel Index (CCI)."""
-        typical_price = (group['High'] + group['Low'] + group['Close']) / 3
-        sma_tp = typical_price.rolling(window=period).mean()
-        mean_dev = (typical_price - sma_tp).abs().rolling(window=period).mean()
-        cci = (typical_price - sma_tp) / (0.015 * mean_dev)
-        return cci
-
-    @staticmethod
     def calculate_ichimoku(group: pd.DataFrame) -> tuple:
-        """Oblicza linie Ichimoku Cloud: Tenkan-sen, Kijun-sen, Senkou Span A, Senkou Span B."""
+        """Oblicza linie Ichimoku Cloud: Tenkan-sen, Kijun-sen, Senkou Span A."""
         high_9 = group['High'].rolling(window=9).max()
         low_9 = group['Low'].rolling(window=9).min()
         tenkan_sen = (high_9 + low_9) / 2
@@ -92,21 +83,8 @@ class FeatureEngineer:
         kijun_sen = (high_26 + low_26) / 2
 
         senkou_span_a = (tenkan_sen + kijun_sen) / 2
-        senkou_span_b = (group['High'].rolling(window=52).max() + group['Low'].rolling(window=52).min()) / 2
 
-        return tenkan_sen, kijun_sen, senkou_span_a, senkou_span_b
-
-    @staticmethod
-    def calculate_roc(prices: pd.Series, period: int = 20) -> pd.Series:
-        """Oblicza Price Rate of Change (ROC)."""
-        return 100 * (prices - prices.shift(period)) / prices.shift(period)
-
-    @staticmethod
-    def calculate_vwap(group: pd.DataFrame) -> pd.Series:
-        """Oblicza Volume Weighted Average Price (VWAP)."""
-        typical_price = (group['High'] + group['Low'] + group['Close']) / 3
-        vwap = (typical_price * group['Volume']).cumsum() / group['Volume'].cumsum()
-        return vwap
+        return tenkan_sen, kijun_sen, senkou_span_a
 
     @staticmethod
     def remove_outliers(df: pd.DataFrame, column: str, threshold: float = 3) -> pd.DataFrame:
@@ -122,29 +100,20 @@ class FeatureEngineer:
         def apply_features(group):
             group = group.sort_values('Date')
 
-            group['MA10'] = group['Close'].rolling(window=10).mean()
             group['MA50'] = group['Close'].rolling(window=50).mean()
             
             group['BB_upper'] = group['Close'].rolling(window=20).mean() + 2 * group['Close'].rolling(window=20).std()
             group['BB_lower'] = group['Close'].rolling(window=20).mean() - 2 * group['Close'].rolling(window=20).std()
             group['BB_width'] = group['BB_upper'] - group['BB_lower']
-            group['Close_to_BB_upper'] = group['Close'] / group['BB_upper']
-            group['Close_to_BB_lower'] = group['Close'] / group['BB_lower']
 
             group['RSI'] = self.compute_rsi(group['Close'])
-            group['MACD'], group['MACD_Signal'], group['MACD_Histogram'] = self.calculate_macd(group['Close'])
+            group['MACD_Signal'], group['MACD_Histogram'] = self.calculate_macd(group['Close'])[1:3]
             group['Stochastic_K'] = self.calculate_stochastic_k(group)
             group['Stochastic_D'] = group['Stochastic_K'].rolling(window=3).mean()
-            group['TR'] = self.calculate_true_range(group)
-            group['ATR'] = group['TR'].rolling(window=14).mean()
             group['OBV'] = self.calculate_obv(group)
             group['ADX'] = self.calculate_adx(group)
-            group['CCI'] = self.calculate_cci(group)
-            group['Tenkan_sen'], group['Kijun_sen'], group['Senkou_Span_A'], group['Senkou_Span_B'] = self.calculate_ichimoku(group)
-            group['ROC'] = self.calculate_roc(group['Close'])
-            group['VWAP'] = self.calculate_vwap(group)
+            group['Tenkan_sen'], group['Kijun_sen'], group['Senkou_Span_A'] = self.calculate_ichimoku(group)
             group['Momentum_20d'] = group['Close'] - group['Close'].shift(20)
-            group['Close_to_MA_ratio'] = group['Close'] / ((group['MA10'] + group['MA50']) / 2)
 
             group['Relative_Returns'] = group['Close'].pct_change().shift(-1)
             group['Log_Returns'] = np.log(group['Close'] / group['Close'].shift(1)).shift(-1)
@@ -155,10 +124,9 @@ class FeatureEngineer:
                 group[col] = group[col].fillna(0)
 
             technical_features = [
-                'MA10', 'MA50', 'BB_upper', 'BB_lower', 'BB_width', 'Close_to_BB_upper', 'Close_to_BB_lower',
-                'RSI', 'MACD', 'MACD_Signal', 'MACD_Histogram', 'Stochastic_K', 'Stochastic_D', 'TR', 'ATR', 'OBV',
-                'ADX', 'CCI', 'Tenkan_sen', 'Kijun_sen', 'Senkou_Span_A', 'Senkou_Span_B', 'ROC', 'VWAP',
-                'Momentum_20d', 'Close_to_MA_ratio'
+                'MA50', 'BB_upper', 'BB_lower', 'BB_width',
+                'RSI', 'MACD_Signal', 'MACD_Histogram', 'Stochastic_K', 'Stochastic_D', 'OBV',
+                'ADX', 'Tenkan_sen', 'Kijun_sen', 'Senkou_Span_A', 'Momentum_20d'
             ]
             for col in technical_features:
                 if col in group.columns:
@@ -190,15 +158,14 @@ class PreprocessingUtils:
         self.month_categories = [str(i) for i in range(1, 13)]
         self.sectors = self.config_manager.get_sectors()
         self.numeric_features = [
-            "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI",
-            "MACD", "MACD_Signal", "MACD_Histogram", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
-            "ADX", "CCI", "Tenkan_sen", "Kijun_sen", "Senkou_Span_A", "Senkou_Span_B", "ROC", "VWAP",
-            "Momentum_20d", "Close_to_MA_ratio", "BB_width", "Close_to_BB_upper", "Close_to_BB_lower",
-            "Relative_Returns", "Log_Returns", "Future_Volume", "Future_Volatility"
+            "Open", "High", "Low", "Close", "Volume", "MA50", "RSI",
+            "MACD_Signal", "MACD_Histogram", "Stochastic_K", "Stochastic_D", "OBV",
+            "ADX", "Tenkan_sen", "Kijun_sen", "Senkou_Span_A", "Momentum_20d",
+            "BB_width", "Relative_Returns", "Log_Returns", "Future_Volume", "Future_Volatility"
         ]
         self.log_features = [
-            "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "ATR", "BB_width",
-            "Tenkan_sen", "Kijun_sen", "Senkou_Span_A", "Senkou_Span_B", "VWAP"
+            "Open", "High", "Low", "Close", "Volume", "MA50", "BB_width",
+            "Tenkan_sen", "Kijun_sen", "Senkou_Span_A"
         ]
         self.categorical_features = ["Day_of_Week", "Month"]
 
