@@ -38,3 +38,15 @@ def load_benchmark_tickers(config):
     except Exception as e:
         logger.error(f"Error loading benchmark_tickers.yaml: {e}")
         raise
+
+def save_history_range(config, history_range_days):
+    """Zapisuje wybrany zakres historycznych danych do pliku konfiguracyjnego."""
+    try:
+        config_manager = ConfigManager()
+        config_manager.config['prediction']['history_range_days'] = history_range_days
+        with open(config_manager.config_file, 'w') as f:
+            yaml.safe_dump(config_manager.config, f)
+        logger.info(f"Zaktualizowano history_range_days do {history_range_days} w pliku konfiguracyjnym.")
+    except Exception as e:
+        logger.error(f"Błąd podczas zapisywania history_range_days: {e}")
+        raise

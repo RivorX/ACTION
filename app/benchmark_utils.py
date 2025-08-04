@@ -28,7 +28,7 @@ def clean_temp_dir(temp_dir):
                     break
                 except PermissionError as e:
                     logger.warning(f"Failed to remove temporary file {file}: {e}. Retrying...")
-                    time.sleep(0.1)  # Short delay to allow file release
+                    time.sleep(0.1)
                 except Exception as e:
                     logger.error(f"Unexpected error while removing {file}: {e}")
                     break
@@ -46,6 +46,8 @@ async def fetch_ticker_data(ticker, start_date, end_date):
         if data.empty:
             logger.error(f"No data for {ticker}")
             return ticker, None
+        # Konwersja dat na tz-naive
+        data['Date'] = pd.to_datetime(data['Date']).dt.tz_localize(None)
         return ticker, data
     except Exception as e:
         logger.error(f"Error fetching data for {ticker}: {e}")
@@ -59,7 +61,7 @@ async def process_ticker(ticker, full_data, config, temp_raw_data_path, max_pred
             return ticker, None
 
         full_data = full_data[full_data['Ticker'] == ticker].copy()
-        full_data['Date'] = pd.to_datetime(full_data['Date'], utc=True)
+        full_data['Date'] = pd.to_datetime(full_data['Date']).dt.tz_localize(None)
         full_data.set_index('Date', inplace=True)
         historical_close = full_data['Close']
 
@@ -79,11 +81,11 @@ async def process_ticker(ticker, full_data, config, temp_raw_data_path, max_pred
             median, _, _ = generate_predictions(config, dataset, model, ticker_data)
 
         # Prepare dates and data
-        last_date = ticker_data['Date'].iloc[-1].to_pydatetime()
+        last_date = pd.Timestamp(ticker_data['Date'].iloc[-1]).tz_localize(None).to_pydatetime()
         pred_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=max_prediction_length, freq='D')
 
         # Trim historical data to pre-prediction period
-        historical_dates = ticker_data['Date'].tolist()
+        historical_dates = ticker_data['Date'].dt.tz_localize(None).tolist()
         historical_close_trimmed = original_close.tolist()
         if len(historical_dates) != len(historical_close_trimmed):
             logger.error(f"Length mismatch: historical_dates ({len(historical_dates)}) and historical_close_trimmed ({len(historical_close_trimmed)}) for {ticker}")
@@ -94,7 +96,7 @@ async def process_ticker(ticker, full_data, config, temp_raw_data_path, max_pred
         if historical_pred_close.empty:
             logger.error(f"No historical data after {trim_date} for {ticker}")
             return ticker, None
-        historical_pred_close = historical_pred_close.reindex(pd.to_datetime(pred_dates), method='ffill')
+        historical_pred_close = historical_pred_close.reindex(pd.to_datetime(pred_dates).tz_localize(None), method='ffill')
         if historical_pred_close.isna().any():
             logger.warning(f"NaN found in historical_pred_close for {ticker}. Filling with ffill and bfill.")
             historical_pred_close = historical_pred_close.ffill().bfill()
@@ -138,7 +140,7 @@ async def process_ticker(ticker, full_data, config, temp_raw_data_path, max_pred
         return ticker, {
             'historical_dates': historical_dates,
             'historical_close': historical_close_trimmed,
-            'pred_dates': [d.to_pydatetime() for d in pred_dates],
+            'pred_dates': [pd.Timestamp(d).tz_localize(None).to_pydatetime() for d in pred_dates],
             'predictions': median.tolist(),
             'historical_pred_close': historical_pred_close,
             'metrics': {
@@ -153,12 +155,12 @@ async def process_ticker(ticker, full_data, config, temp_raw_data_path, max_pred
         logger.error(f"Error processing {ticker}: {e}")
         return ticker, None
 
-async def create_benchmark_plot(config, benchmark_tickers, historical_close_dict, years):
+async def create_benchmark_plot(config, benchmark_tickers, historical_close_dict, years, historical_period_days=365):
     """Tworzy wykres benchmarku i oblicza metryki dla wielu tickerów asynchronicznie."""
     all_results = {}
     accuracy_scores = {}
     max_prediction_length = config['model']['max_prediction_length']
-    trim_date = pd.Timestamp(datetime.now(), tz='UTC') - pd.Timedelta(days=max_prediction_length)
+    trim_date = pd.Timestamp(datetime.now()).tz_localize(None) - pd.Timedelta(days=max_prediction_length)
     start_date = trim_date - pd.Timedelta(days=years * 365)
     model_name = config['model_name']
     temp_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data', 'temp')
@@ -169,7 +171,7 @@ async def create_benchmark_plot(config, benchmark_tickers, historical_close_dict
     # Pobieranie danych dla wszystkich tickerów
     logger.info("Pobieranie danych dla wszystkich tickerów...")
     config_manager = ConfigManager()  # Singleton
-    tasks = [fetch_ticker_data(ticker, start_date, datetime.now()) for ticker in benchmark_tickers]
+    tasks = [fetch_ticker_data(ticker, start_date, datetime.now().replace(tzinfo=None)) for ticker in benchmark_tickers]
     ticker_data_results = await asyncio.gather(*tasks)
     ticker_data_dict = {ticker: data for ticker, data in ticker_data_results if data is not None}
 
@@ -217,9 +219,15 @@ async def create_benchmark_plot(config, benchmark_tickers, historical_close_dict
             historical_pred_close = data['historical_pred_close']
             predictions = data['predictions']
 
-            combined_dates = historical_dates + pred_dates
-            combined_close = historical_close + historical_pred_close
-            combined_pred_close = [None] * len(historical_dates) + predictions
+            # Filtruj dane historyczne do wybranego okresu
+            cutoff_date = pd.Timestamp(pred_dates[0]).tz_localize(None) - pd.Timedelta(days=historical_period_days)
+            mask = pd.Series(historical_dates).dt.tz_localize(None) >= cutoff_date
+            filtered_historical_dates = pd.Series(historical_dates)[mask].tolist()
+            filtered_historical_close = pd.Series(historical_close)[mask].tolist()
+
+            combined_dates = filtered_historical_dates + pred_dates
+            combined_close = filtered_historical_close + historical_pred_close
+            combined_pred_close = [None] * len(filtered_historical_dates) + predictions
 
             if len(combined_dates) != len(combined_close) or len(combined_dates) != len(combined_pred_close):
                 logger.error(f"Niezgodność długości dla {ticker}: combined_dates={len(combined_dates)}, combined_close={len(combined_close)}, combined_pred_close={len(combined_pred_close)}")
@@ -230,7 +238,7 @@ async def create_benchmark_plot(config, benchmark_tickers, historical_close_dict
                 'Close': combined_close,
                 'Predicted_Close': combined_pred_close
             })
-            plot_data['Date'] = pd.to_datetime(plot_data['Date'], utc=True)
+            plot_data['Date'] = pd.to_datetime(plot_data['Date']).dt.tz_localize(None)
 
             fig.add_trace(go.Scatter(
                 x=plot_data['Date'],
@@ -249,7 +257,7 @@ async def create_benchmark_plot(config, benchmark_tickers, historical_close_dict
                 legendgroup=ticker
             ))
 
-            split_date = pd.Timestamp(pred_dates[0]).isoformat()
+            split_date = pd.Timestamp(pred_dates[0]).tz_localize(None).isoformat()
             fig.add_shape(
                 type="line",
                 x0=split_date,
