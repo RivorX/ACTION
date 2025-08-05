@@ -28,12 +28,16 @@ class FeatureEngineer:
 
     @staticmethod
     def calculate_macd(prices: pd.Series) -> tuple:
-        """Oblicza MACD, linię sygnałową i histogram MACD."""
+        """Oblicza MACD, linię sygnałową i histogram MACD z ograniczeniem zakresu."""
         exp12 = prices.ewm(span=12, adjust=False).mean()
         exp26 = prices.ewm(span=26, adjust=False).mean()
         macd = exp12 - exp26
         signal = macd.ewm(span=9, adjust=False).mean()
         histogram = macd - signal
+        # Ograniczenie typowego zakresu MACD (np. -10 do 10)
+        macd = macd.clip(-10, 10)
+        signal = signal.clip(-10, 10)
+        histogram = histogram.clip(-10, 10)
         return macd, signal, histogram
 
     @staticmethod
@@ -95,32 +99,40 @@ class FeatureEngineer:
         return df[abs(z_scores) < threshold]
 
     def add_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Dodaje nowe cechy do ramki danych z grupowaniem po Ticker."""
+        """Dodaje nowe cechy do ramki danych z grupowaniem po Ticker, z ograniczeniem wartości odstających."""
         df = df.copy()
         df['Date'] = pd.to_datetime(df['Date'], utc=True)
 
         def apply_features(group):
             group = group.sort_values('Date')
 
+            # Usuwanie ewidentnych anomalii przed liczeniem cech
+            group = group[(group['Close'] > 0) & (group['High'] >= group['Low'])]
+            group = group.reset_index(drop=True)
+
             group['MA50'] = group['Close'].rolling(window=50).mean()
-            
             group['BB_upper'] = group['Close'].rolling(window=20).mean() + 2 * group['Close'].rolling(window=20).std()
             group['BB_lower'] = group['Close'].rolling(window=20).mean() - 2 * group['Close'].rolling(window=20).std()
             group['BB_width'] = group['BB_upper'] - group['BB_lower']
 
             group['RSI'] = self.compute_rsi(group['Close'])
-            group['MACD_Signal'], group['MACD_Histogram'] = self.calculate_macd(group['Close'])[1:3]
+            macd, signal, histogram = self.calculate_macd(group['Close'])
+            group['MACD_Signal'] = signal
+            group['MACD_Histogram'] = histogram
             group['Stochastic_K'] = self.calculate_stochastic_k(group)
             group['Stochastic_D'] = group['Stochastic_K'].rolling(window=3).mean()
             group['OBV'] = self.calculate_obv(group)
             group['ADX'] = self.calculate_adx(group)
             group['Tenkan_sen'], group['Kijun_sen'], group['Senkou_Span_A'] = self.calculate_ichimoku(group)
-            group['Momentum_20d'] = group['Close'] - group['Close'].shift(20)
+            # Momentum - ogranicz do typowego zakresu (np. -10 do 10 po logarytmowaniu, -1000 do 1000 przed)
+            group['Momentum_20d'] = (group['Close'] - group['Close'].shift(20)).clip(-1000, 1000)
 
             group['Relative_Returns'] = group['Close'].pct_change().shift(-1)
             group['Log_Returns'] = np.log(group['Close'] / group['Close'].shift(1)).shift(-1)
-            group['Future_Volume'] = group['Volume'].shift(-1)
-            group['Future_Volatility'] = group['Close'].rolling(window=20).std().shift(-1)
+            # Future_Volume - ogranicz do rozsądnego zakresu (np. 0 do 1_000_000)
+            group['Future_Volume'] = group['Volume'].shift(-1).clip(0, 1_000_000)
+            # Future_Volatility - ogranicz do rozsądnego zakresu (np. 0 do 10_000)
+            group['Future_Volatility'] = group['Close'].rolling(window=20).std().shift(-1).clip(0, 10_000)
 
             for col in ['Relative_Returns', 'Log_Returns', 'Future_Volume', 'Future_Volatility']:
                 group[col] = group[col].fillna(0)
@@ -171,7 +183,7 @@ class PreprocessingUtils:
             "BB_upper", "BB_lower", "OBV", "Tenkan_sen", "Kijun_sen", "Senkou_Span_A"
         ]
         self.categorical_features = ["Day_of_Week", "Month"]
-        self.robust_features = ["RSI", "Stochastic_K", "Stochastic_D"]  # Cechy używające normalizacji robust
+        self.robust_features = self.numeric_features  # Wszystkie cechy używają RobustScaler
 
     def load_normalizers(self) -> dict:
         """Wczytuje normalizery z pliku."""
@@ -179,8 +191,6 @@ class PreprocessingUtils:
             try:
                 with open(self.normalizers_path, 'rb') as f:
                     normalizers = pickle.load(f)
-                for feature, normalizer in normalizers.items():
-                    logger.info(f"Wczytano normalizer dla {feature}: metoda={getattr(normalizer, 'method', 'standard')}")
                 return normalizers
             except Exception as e:
                 logger.error(f"Błąd wczytywania normalizerów: {e}")
@@ -253,26 +263,34 @@ class PreprocessingUtils:
         df['Month'] = pd.Categorical(df['Date'].dt.month.astype(str), categories=self.month_categories, ordered=False)
         df['Sector'] = pd.Categorical(df['Sector'], categories=self.sectors, ordered=False)
 
-        # Logarytmowanie cech
+        # Logarytmowanie cech (zachowanie znaku dla cech mogących być ujemne)
         for feature in self.log_features:
             if feature in df.columns:
                 df[feature] = np.log1p(df[feature].clip(lower=0))
 
-        # Normalizacja
+        # Dodatkowe logarytmowanie wybranych cech
+        log_features_signed = ["OBV", "Momentum_20d"]
+        log_features_unsigned = ["BB_width", "Future_Volume", "Future_Volatility"]
+        for feature in log_features_signed:
+            if feature in df.columns:
+                # log1p z zachowaniem znaku
+                df[feature] = np.sign(df[feature]) * np.log1p(np.abs(df[feature]))
+        for feature in log_features_unsigned:
+            if feature in df.columns:
+                df[feature] = np.log1p(df[feature].clip(lower=0))
+
+        # Normalizacja z użyciem RobustScaler dla wszystkich cech
         normalizers = self.load_normalizers()
         new_normalizers = {}
         normalized_df = df.copy()  # Kopia do zapisu znormalizowanych danych
         for feature in self.numeric_features:
             if feature in df.columns:
-                if feature in self.robust_features:
-                    normalizer = normalizers.get(feature, TorchNormalizer(method='robust'))
-                else:
-                    normalizer = normalizers.get(feature, TorchNormalizer())
+                normalizer = normalizers.get(feature, TorchNormalizer(method='robust'))
                 df[feature] = normalizer.fit_transform(df[feature].values) if feature not in normalizers else normalizer.transform(df[feature].values)
                 new_normalizers[feature] = normalizer
                 normalized_df[feature] = df[feature]  # Aktualizacja znormalizowanej kopii
 
-        # Zapisz nowe normalizery, jeśli istnieją
+        # Zapisz nowe normalizery
         if new_normalizers:
             self.save_normalizers(new_normalizers)
 
@@ -313,7 +331,7 @@ class PreprocessingUtils:
             "time_varying_known_reals": [f for f in valid_numeric_features if f not in ["Relative_Returns", "Log_Returns", "Future_Volume", "Future_Volatility"]],
             "time_varying_known_categoricals": valid_categorical_features,
             "time_varying_unknown_reals": ["Relative_Returns"],
-            "target_normalizer": normalizers.get("Relative_Returns", TorchNormalizer(method='robust' if "Relative_Returns" in self.robust_features else 'standard')),
+            "target_normalizer": normalizers.get("Relative_Returns", TorchNormalizer(method='robust')),
             "allow_missing_timesteps": True,
             "add_encoder_length": False,
             "categorical_encoders": {
