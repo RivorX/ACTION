@@ -99,20 +99,19 @@ class FeatureEngineer:
         return df[abs(z_scores) < threshold]
 
     def add_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Dodaje nowe cechy do ramki danych z grupowaniem po Ticker, z ograniczeniem wartości odstających."""
+        """Dodaje nowe cechy do ramki danych z grupowaniem po Ticker, z agresywnym clippingiem i transformacjami."""
         df = df.copy()
         df['Date'] = pd.to_datetime(df['Date'], utc=True)
 
         def apply_features(group):
             group = group.sort_values('Date')
-
-            # Usuwanie ewidentnych anomalii przed liczeniem cech
             group = group[(group['Close'] > 0) & (group['High'] >= group['Low'])]
             group = group.reset_index(drop=True)
 
-            group['MA50'] = group['Close'].rolling(window=50).mean()
-            group['BB_upper'] = group['Close'].rolling(window=20).mean() + 2 * group['Close'].rolling(window=20).std()
-            group['BB_lower'] = group['Close'].rolling(window=20).mean() - 2 * group['Close'].rolling(window=20).std()
+            # Rolling mean/std z fillna przed clippingiem
+            group['MA50'] = group['Close'].rolling(window=50, min_periods=1).mean().bfill()
+            group['BB_upper'] = (group['Close'].rolling(window=20, min_periods=1).mean() + 2 * group['Close'].rolling(window=20, min_periods=1).std()).bfill()
+            group['BB_lower'] = (group['Close'].rolling(window=20, min_periods=1).mean() - 2 * group['Close'].rolling(window=20, min_periods=1).std()).bfill()
             group['BB_width'] = group['BB_upper'] - group['BB_lower']
 
             group['RSI'] = self.compute_rsi(group['Close'])
@@ -120,22 +119,60 @@ class FeatureEngineer:
             group['MACD_Signal'] = signal
             group['MACD_Histogram'] = histogram
             group['Stochastic_K'] = self.calculate_stochastic_k(group)
-            group['Stochastic_D'] = group['Stochastic_K'].rolling(window=3).mean()
+            # Stochastic_D: rolling mean z min_periods=1, fillna, potem przeskalowanie do [0,1]
+            group['Stochastic_D'] = group['Stochastic_K'].rolling(window=3, min_periods=1).mean().bfill()
+            # Przeskaluj do [0,1] jeśli są wartości spoza tego zakresu
+            min_sd = group['Stochastic_D'].min()
+            max_sd = group['Stochastic_D'].max()
+            if max_sd > min_sd:
+                group['Stochastic_D'] = (group['Stochastic_D'] - min_sd) / (max_sd - min_sd)
+            group['Stochastic_D'] = group['Stochastic_D'].clip(0, 1)
+
             group['OBV'] = self.calculate_obv(group)
             group['ADX'] = self.calculate_adx(group)
             group['Tenkan_sen'], group['Kijun_sen'], group['Senkou_Span_A'] = self.calculate_ichimoku(group)
-            # Momentum - ogranicz do typowego zakresu (np. -10 do 10 po logarytmowaniu, -1000 do 1000 przed)
             group['Momentum_20d'] = (group['Close'] - group['Close'].shift(20)).clip(-1000, 1000)
 
+            # --- AGRESYWNY CLIPPING I TRANSFORMACJE ---
+            # Relative_Returns: clipping, sign-preserving log, fillna
             group['Relative_Returns'] = group['Close'].pct_change().shift(-1)
-            group['Log_Returns'] = np.log(group['Close'] / group['Close'].shift(1)).shift(-1)
-            # Future_Volume - ogranicz do rozsądnego zakresu (np. 0 do 1_000_000)
-            group['Future_Volume'] = group['Volume'].shift(-1).clip(0, 1_000_000)
-            # Future_Volatility - ogranicz do rozsądnego zakresu (np. 0 do 10_000)
-            group['Future_Volatility'] = group['Close'].rolling(window=20).std().shift(-1).clip(0, 10_000)
+            group['Relative_Returns'] = group['Relative_Returns'].clip(-0.2, 0.2)
+            group['Relative_Returns'] = np.sign(group['Relative_Returns']) * np.log1p(np.abs(group['Relative_Returns']))
+            # Fillna na końcu
 
-            for col in ['Relative_Returns', 'Log_Returns', 'Future_Volume', 'Future_Volatility']:
-                group[col] = group[col].fillna(0)
+            # Log_Returns: clipping, sign-preserving log
+            group['Log_Returns'] = np.log(group['Close'] / group['Close'].shift(1)).shift(-1)
+            group['Log_Returns'] = group['Log_Returns'].clip(-0.2, 0.2)
+            group['Log_Returns'] = np.sign(group['Log_Returns']) * np.log1p(np.abs(group['Log_Returns']))
+
+            # Future_Volume: shift(-1), mocny clipping do percentyla 95, log1p
+            group['Future_Volume'] = group['Volume'].shift(-1)
+            fv_95 = group['Future_Volume'].quantile(0.95)
+            group['Future_Volume'] = group['Future_Volume'].clip(1, fv_95)
+            group['Future_Volume'] = np.log1p(group['Future_Volume'])
+
+            # Future_Volatility: rolling std, shift(-1), clipping do percentyla 60, log1p
+            group['Future_Volatility'] = group['Close'].rolling(window=20, min_periods=1).std().shift(-1)
+            fv_60 = group['Future_Volatility'].quantile(0.60)
+            group['Future_Volatility'] = group['Future_Volatility'].clip(1e-6, fv_60)
+            group['Future_Volatility'] = np.log1p(group['Future_Volatility'])
+
+            # OBV: sign-preserving log, clipping do percentyla 1/99
+            if 'OBV' in group.columns:
+                group['OBV'] = np.sign(group['OBV']) * np.log1p(np.abs(group['OBV']))
+                lower = group['OBV'].quantile(0.01)
+                upper = group['OBV'].quantile(0.99)
+                group['OBV'] = group['OBV'].clip(lower, upper)
+
+            # Fillna na końcu dla wszystkich cech
+            fillna_cols = [
+                'Relative_Returns', 'Log_Returns', 'Future_Volume', 'Future_Volatility',
+                'Stochastic_K', 'Stochastic_D', 'OBV', 'MA50', 'BB_upper', 'BB_lower', 'BB_width',
+                'RSI', 'MACD_Signal', 'MACD_Histogram', 'ADX', 'Tenkan_sen', 'Kijun_sen', 'Senkou_Span_A', 'Momentum_20d'
+            ]
+            for col in fillna_cols:
+                if col in group.columns:
+                    group[col] = group[col].fillna(0)
 
             technical_features = [
                 'MA50', 'BB_upper', 'BB_lower', 'BB_width',
@@ -264,29 +301,45 @@ class PreprocessingUtils:
         df['Sector'] = pd.Categorical(df['Sector'], categories=self.sectors, ordered=False)
 
         # Logarytmowanie cech (zachowanie znaku dla cech mogących być ujemne)
+        # UWAGA: Relative_Returns, Log_Returns, Future_Volume, Future_Volatility, OBV są już przetransformowane w add_features
         for feature in self.log_features:
-            if feature in df.columns:
+            if feature in df.columns and feature not in ["Relative_Returns", "Log_Returns", "Future_Volume", "Future_Volatility", "OBV"]:
                 df[feature] = np.log1p(df[feature].clip(lower=0))
 
-        # Dodatkowe logarytmowanie wybranych cech
-        log_features_signed = ["OBV", "Momentum_20d"]
-        log_features_unsigned = ["BB_width", "Future_Volume", "Future_Volatility"]
+        # Dodatkowe logarytmowanie wybranych cech (Momentum_20d, BB_width)
+        log_features_signed = ["Momentum_20d"]
+        log_features_unsigned = ["BB_width"]
         for feature in log_features_signed:
             if feature in df.columns:
-                # log1p z zachowaniem znaku
                 df[feature] = np.sign(df[feature]) * np.log1p(np.abs(df[feature]))
         for feature in log_features_unsigned:
             if feature in df.columns:
                 df[feature] = np.log1p(df[feature].clip(lower=0))
 
-        # Normalizacja z użyciem RobustScaler dla wszystkich cech
+        # Per-feature normalizery: MinMaxScaler dla wybranych, RobustScaler dla reszty
+
+        from sklearn.preprocessing import MinMaxScaler, RobustScaler
+
+        minmax_features = [
+            'Future_Volume', 'Future_Volatility', 'BB_width', 'RSI', 'Stochastic_K', 'Stochastic_D'
+        ]
+        robust_features = [f for f in self.numeric_features if f not in minmax_features]
+
         normalizers = self.load_normalizers()
         new_normalizers = {}
         normalized_df = df.copy()  # Kopia do zapisu znormalizowanych danych
         for feature in self.numeric_features:
             if feature in df.columns:
-                normalizer = normalizers.get(feature, TorchNormalizer(method='robust'))
-                df[feature] = normalizer.fit_transform(df[feature].values) if feature not in normalizers else normalizer.transform(df[feature].values)
+                # Wybierz normalizer
+                if feature in minmax_features:
+                    normalizer = normalizers.get(feature, MinMaxScaler())
+                else:
+                    normalizer = normalizers.get(feature, RobustScaler())
+                # Dopasuj i transformuj
+                if feature not in normalizers:
+                    df[feature] = normalizer.fit_transform(df[[feature]])
+                else:
+                    df[feature] = normalizer.transform(df[[feature]])
                 new_normalizers[feature] = normalizer
                 normalized_df[feature] = df[feature]  # Aktualizacja znormalizowanej kopii
 
@@ -331,7 +384,8 @@ class PreprocessingUtils:
             "time_varying_known_reals": [f for f in valid_numeric_features if f not in ["Relative_Returns", "Log_Returns", "Future_Volume", "Future_Volatility"]],
             "time_varying_known_categoricals": valid_categorical_features,
             "time_varying_unknown_reals": ["Relative_Returns"],
-            "target_normalizer": normalizers.get("Relative_Returns", TorchNormalizer(method='robust')),
+            # Wymuszamy TorchNormalizer dla targetu
+            "target_normalizer": TorchNormalizer(method='robust'),
             "allow_missing_timesteps": True,
             "add_encoder_length": False,
             "categorical_encoders": {
