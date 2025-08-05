@@ -40,20 +40,33 @@ class ModelConfig:
         self.config = config
         # Lista wymaganych kluczy w config['model']
         required_model_keys = [
+            'quantiles', 'use_quantile_loss', 'log_interval', 'embedding_sizes',
+            'max_prediction_length', 'min_encoder_length', 'max_encoder_length',
+            'hidden_size', 'attention_head_size', 'dropout', 'learning_rate',
+            'lstm_layers', 'weight_start', 'weight_end', 'directional_weight'
+        ]
+        # Lista wymaganych kluczy w config['model']['tuning']
+        required_tuning_keys = [
             'min_hidden_size', 'max_hidden_size', 'min_lstm_layers', 'max_lstm_layers',
             'min_attention_head_size', 'max_attention_head_size', 'min_learning_rate', 'max_learning_rate',
             'min_dropout', 'max_dropout', 'min_hidden_continuous_size', 'max_hidden_continuous_size',
             'min_weight_start', 'max_weight_start', 'min_weight_end', 'max_weight_end',
-            'min_directional_weight', 'max_directional_weight', 'quantiles', 'use_quantile_loss',
-            'log_interval', 'embedding_sizes'
+            'min_directional_weight', 'max_directional_weight'
         ]
         # Lista wymaganych kluczy w config['training']
-        required_training_keys = ['early_stopping_patience']
+        required_training_keys = ['early_stopping_patience', 'monitor_metric']
         
         # Sprawdzenie brakujących kluczy w config['model']
         missing_model_keys = [key for key in required_model_keys if key not in config['model']]
         if missing_model_keys:
             raise ValueError(f"Brak wymaganych kluczy w config['model']: {missing_model_keys}")
+        
+        # Sprawdzenie brakujących kluczy w config['model']['tuning']
+        if 'tuning' not in config['model']:
+            raise ValueError("Brak sekcji 'tuning' w config['model']")
+        missing_tuning_keys = [key for key in required_tuning_keys if key not in config['model']['tuning']]
+        if missing_tuning_keys:
+            raise ValueError(f"Brak wymaganych kluczy w config['model']['tuning']: {missing_tuning_keys}")
         
         # Sprawdzenie brakujących kluczy w config['training']
         missing_training_keys = [key for key in required_training_keys if key not in config['training']]
@@ -65,6 +78,11 @@ class ModelConfig:
         missing_embedding_keys = [key for key in required_embedding_keys if key not in config['model']['embedding_sizes']]
         if missing_embedding_keys:
             raise ValueError(f"Brak wymaganych kluczy w config['model']['embedding_sizes']: {missing_embedding_keys}")
+        
+        # Walidacja monitor_metric
+        valid_metrics = ['val_loss', 'val_combined_metric']
+        if config['training']['monitor_metric'] not in valid_metrics:
+            raise ValueError(f"Nieprawidłowa wartość monitor_metric: {config['training']['monitor_metric']}. Dozwolone wartości: {valid_metrics}")
         
         self.use_quantile_loss = config['model']['use_quantile_loss']
         self.quantiles = config['model']['quantiles']
@@ -108,20 +126,20 @@ class HyperparamFactory:
     def from_trial(trial, config: ModelConfig) -> Dict[str, Any]:
         """Generuje hiperparametry z trialu Optuna."""
         return {
-            "hidden_size": trial.suggest_int("hidden_size", config.config['model']['min_hidden_size'], config.config['model']['max_hidden_size']),
-            "learning_rate": trial.suggest_float("learning_rate", config.config['model']['min_learning_rate'], config.config['model']['max_learning_rate'], log=True),
-            "attention_head_size": trial.suggest_int("attention_head_size", config.config['model']['min_attention_head_size'], config.config['model']['max_attention_head_size']),
-            "dropout": trial.suggest_float("dropout", config.config['model']['min_dropout'], config.config['model']['max_dropout']),
-            "lstm_layers": trial.suggest_int("lstm_layers", config.config['model']['min_lstm_layers'], config.config['model']['max_lstm_layers']),
-            "hidden_continuous_size": trial.suggest_int("hidden_continuous_size", config.config['model']['min_hidden_continuous_size'], config.config['model']['max_hidden_continuous_size']),
+            "hidden_size": trial.suggest_int("hidden_size", config.config['model']['tuning']['min_hidden_size'], config.config['model']['tuning']['max_hidden_size']),
+            "learning_rate": trial.suggest_float("learning_rate", config.config['model']['tuning']['min_learning_rate'], config.config['model']['tuning']['max_learning_rate'], log=True),
+            "attention_head_size": trial.suggest_int("attention_head_size", config.config['model']['tuning']['min_attention_head_size'], config.config['model']['tuning']['max_attention_head_size']),
+            "dropout": trial.suggest_float("dropout", config.config['model']['tuning']['min_dropout'], config.config['model']['tuning']['max_dropout']),
+            "lstm_layers": trial.suggest_int("lstm_layers", config.config['model']['tuning']['min_lstm_layers'], config.config['model']['tuning']['max_lstm_layers']),
+            "hidden_continuous_size": trial.suggest_int("hidden_continuous_size", config.config['model']['tuning']['min_hidden_continuous_size'], config.config['model']['tuning']['max_hidden_continuous_size']),
             "output_size": len(config.quantiles) if config.use_quantile_loss else 1,
             "loss": QuantileLoss(quantiles=config.quantiles) if config.use_quantile_loss else MAE(),
             "log_interval": config.config['model']['log_interval'],
             "reduce_on_plateau_patience": config.config['training']['early_stopping_patience'],
             "embedding_sizes": config.embedding_sizes,
-            "weight_start": trial.suggest_float("weight_start", config.config['model']['min_weight_start'], config.config['model']['max_weight_start']),
-            "weight_end": trial.suggest_float("weight_end", config.config['model']['min_weight_end'], config.config['model']['max_weight_end']),
-            "directional_weight": trial.suggest_float("directional_weight", config.config['model']['min_directional_weight'], config.config['model']['max_directional_weight'])
+            "weight_start": trial.suggest_float("weight_start", config.config['model']['tuning']['min_weight_start'], config.config['model']['tuning']['max_weight_start']),
+            "weight_end": trial.suggest_float("weight_end", config.config['model']['tuning']['min_weight_end'], config.config['model']['tuning']['max_weight_end']),
+            "directional_weight": trial.suggest_float("directional_weight", config.config['model']['tuning']['min_directional_weight'], config.config['model']['tuning']['max_directional_weight'])
         }
 
     @staticmethod
@@ -154,6 +172,7 @@ class CustomTemporalFusionTransformer(LightningModule):
         self.enable_detailed_validation = config['validation']['enable_detailed_validation']
         self.max_val_batches_to_log = config['validation']['max_validation_batches_to_log']
         self.validation_outputs = []
+        self.monitor_metric = config['training']['monitor_metric']
         self._initialize_model(dataset)
         self._save_hyperparameters()
 
@@ -281,6 +300,7 @@ class CustomTemporalFusionTransformer(LightningModule):
                     self.log(f"{stage}_mape", mape, on_step=False, on_epoch=True, prog_bar=True, batch_size=x['encoder_cont'].size(0))
                     self.log(f"{stage}_directional_accuracy", directional_accuracy, on_step=False, on_epoch=True, prog_bar=True, batch_size=x['encoder_cont'].size(0))
                     self.log(f"{stage}_combined_metric", combined_metric, on_step=True, on_epoch=True, prog_bar=True, batch_size=x['encoder_cont'].size(0))
+                    self.log(f"{stage}_loss", weighted_loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=x['encoder_cont'].size(0))
                 
                 if not torch.isfinite(weighted_loss):
                     logger.warning(f"Weighted loss nie jest skończony w batch {batch_idx}: {weighted_loss}")
@@ -339,10 +359,10 @@ class CustomTemporalFusionTransformer(LightningModule):
                     if close_normalizer is not None:
                         try:
                             numeric_features = [
-                                "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI",
-                                "MACD", "MACD_Signal", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
-                                "ADX", "CCI", "Tenkan_sen", "Kijun_sen", "Senkou_Span_A", "Senkou_Span_B", "ROC", "VWAP",
-                                "Momentum_20d", "Close_to_MA_ratio", "BB_width", "Close_to_BB_upper", "Close_to_BB_lower"
+                                "Open", "High", "Low", "Close", "Volume", "MA50", "RSI",
+                                "MACD_Signal", "MACD_Histogram", "Stochastic_K", "Stochastic_D", "OBV",
+                                "ADX", "Tenkan_sen", "Kijun_sen", "Senkou_Span_A", "Momentum_20d",
+                                "BB_width", "Relative_Returns", "Log_Returns", "Future_Volume", "Future_Volatility"
                             ]
                             close_idx = numeric_features.index("Close") if "Close" in numeric_features else None
                             
@@ -448,7 +468,7 @@ class CustomTemporalFusionTransformer(LightningModule):
             self.log('val_mape_epoch', avg_mape, prog_bar=True)
             self.log('val_combined_metric_epoch', avg_combined_metric, prog_bar=True)
             logger.info(f"Validation epoch end: val_l2_norm = {avg_l2_norm:.4f}")
-            logger.info(f"Validation epoch end: val_combined_metric = {avg_combined_metric:.4f}")
+            logger.info(f"Validation epoch end: {self.monitor_metric} = {avg_combined_metric if self.monitor_metric == 'val_combined_metric' else avg_loss:.4f}")
             logger.info(f"Validation epoch end: learning_rate = {self.optimizers().param_groups[0]['lr']:.6f}")
         else:
             logger.warning("Brak wyników walidacji w validation_outputs")
@@ -470,7 +490,7 @@ class CustomTemporalFusionTransformer(LightningModule):
             "optimizer": optimizer,
             "lr_scheduler": {
                 "scheduler": scheduler,
-                "monitor": "val_combined_metric",
+                "monitor": self.monitor_metric,
             },
         }
 

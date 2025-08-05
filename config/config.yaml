@@ -1,52 +1,31 @@
-# Konfiguracja modelu
-# Ten plik zawiera ustawienia dla modelu Temporal Fusion Transformer
+# Konfiguracja modelu Temporal Fusion Transformer
+# Ten plik zawiera ustawienia dla modelu, treningu, danych i predykcji
 
 # Nazwa modelu
 model_name: Gen5_1
 
 # Ustawienia modelu
 model:
-  max_prediction_length: 30  # Maksymalna długość predykcji (dni)
-  min_encoder_length: 50     # Minimalna długość danych wejściowych
-  max_encoder_length: 180    # Maksymalna długość danych historycznych
-  hidden_size: 128           # Rozmiar warstwy ukrytej
-  attention_head_size: 4     # Liczba głowic uwagi
-  dropout: 0.3               # Współczynnik dropout dla stabilności
-  learning_rate: 0.001       # Współczynnik uczenia
-  lstm_layers: 2             # Liczba warstw LSTM
-  loss: QuantileLoss         # Funkcja straty
-  use_quantile_loss: true    # Włączenie straty kwantylowej
-  quantiles: [0.1, 0.5, 0.9] # Kwantyle dla predykcji
-  # Wagi czasowe
-  weight_start: 1.0
-  weight_end: 1.2
-  # Waga dla directional accuracy
-  directional_weight: 0.3
-  # Zakresy hiperparametrów dla Optuna
-  min_hidden_size: 32
-  max_hidden_size: 128
-  min_lstm_layers: 1
-  max_lstm_layers: 4
-  min_attention_head_size: 1
-  max_attention_head_size: 6
-  min_learning_rate: 0.0001  # Dolny zakres dla learning_rate
-  max_learning_rate: 0.01     # Górny zakres dla learning_rate
-  min_dropout: 0.1           # Dolny zakres dla dropout
-  max_dropout: 0.3           # Górny zakres dla dropout
-  min_hidden_continuous_size: 16   # Dolny zakres dla hidden_continuous_size
-  max_hidden_continuous_size: 128  # Górny zakres dla hidden_continuous_size
-  min_weight_start: 1.0      # Dolny zakres dla weight_start
-  max_weight_start: 1.2      # Górny zakres dla weight_start
-  min_weight_end: 1.3        # Dolny zakres dla weight_end
-  max_weight_end: 2.0        # Górny zakres dla weight_end
-  min_directional_weight: 0.1  # Dolny zakres dla directional_weight
-  max_directional_weight: 0.5  # Górny zakres dla directional_weight
-  log_interval: 10           # Interwał logowania
-  embedding_sizes:           # Rozmiary embeddingów dla zmiennych kategorycznych
+  # Parametry modelu
+  max_prediction_length: 30      # Maksymalna długość predykcji (dni)
+  min_encoder_length: 50         # Minimalna długość danych wejściowych
+  max_encoder_length: 180        # Maksymalna długość danych historycznych
+  hidden_size: 128               # Rozmiar warstwy ukrytej
+  attention_head_size: 4         # Liczba głowic uwagi
+  dropout: 0.3                   # Współczynnik dropout dla stabilności
+  learning_rate: 0.001           # Współczynnik uczenia
+  lstm_layers: 2                 # Liczba warstw LSTM
+  use_quantile_loss: true        # Włączenie straty kwantylowej
+  quantiles: [0.1, 0.5, 0.9]     # Kwantyle dla predykcji
+  weight_start: 1.0              # Początkowa waga czasowa
+  weight_end: 1.2                # Końcowa waga czasowa
+  directional_weight: 0.3        # Waga dla directional accuracy
+  log_interval: 10               # Interwał logowania
+  embedding_sizes:               # Rozmiary embeddingów dla zmiennych kategorycznych
     Sector: [12, 5]
     Day_of_Week: [7, 5]
     Month: [12, 5]
-  sectors:
+  sectors:                       # Lista sektorów
     - Technology
     - Healthcare
     - Financials
@@ -59,22 +38,43 @@ model:
     - Communication Services
     - Real Estate
     - Unknown
+  # Zakresy hiperparametrów dla optymalizacji Optuna
+  tuning:
+    min_hidden_size: 32
+    max_hidden_size: 128
+    min_lstm_layers: 1
+    max_lstm_layers: 3
+    min_attention_head_size: 1
+    max_attention_head_size: 6
+    min_learning_rate: 0.0001
+    max_learning_rate: 0.01
+    min_dropout: 0.1
+    max_dropout: 0.3
+    min_hidden_continuous_size: 16
+    max_hidden_continuous_size: 128
+    min_weight_start: 1.0
+    max_weight_start: 1.2
+    min_weight_end: 1.3
+    max_weight_end: 2.0
+    min_directional_weight: 0.01
+    max_directional_weight: 0.5
 
 # Ustawienia treningu
 training:
-  max_epochs: 100               # Maksymalna liczba epok
+  max_epochs: 100                # Maksymalna liczba epok
   batch_size: 128                # Rozmiar partii dla treningu
-  early_stopping_patience: 10   # Cierpliwość dla wczesnego zatrzymania
-  optuna_trials: 10             # Liczba prób dla optymalizacji hiperparametrów
-  reduce_lr_patience: 3         # Cierpliwość dla redukcji współczynnika uczenia
-  reduce_lr_factor: 0.6         # Czynnik redukcji współczynnika uczenia
-  weight_decay: 0.05            # Współczynnik weight decay
-  gradient_clip_val: 0.5        # Wartość klipu gradientu
+  early_stopping_patience: 10    # Cierpliwość dla wczesnego zatrzymania
+  reduce_lr_patience: 3          # Cierpliwość dla redukcji współczynnika uczenia
+  reduce_lr_factor: 0.6          # Czynnik redukcji współczynnika uczenia
+  weight_decay: 0.1              # Współczynnik weight decay
+  gradient_clip_val: 0.5         # Wartość klipu gradientu
+  monitor_metric: val_loss       # Metryka do monitorowania (val_loss lub val_combined_metric)
+  optuna_trials: 10              # Liczba prób dla optymalizacji hiperparametrów
 
 # Ustawienia walidacji
 validation:
-  enable_detailed_validation: false     # Czy włączyć szczegółowe logowanie walidacji
-  max_validation_batches_to_log: 3      # Maksymalna liczba batchy walidacyjnych do logowania
+  enable_detailed_validation: false  # Czy włączyć szczegółowe logowanie walidacji
+  max_validation_batches_to_log: 3   # Maksymalna liczba batchy walidacyjnych do logowania
 
 # Ustawienia predykcji
 prediction:
