@@ -153,6 +153,7 @@ class PreprocessingUtils:
         self.config = config
         self.feature_engineer = FeatureEngineer()
         self.normalizers_path = Path(config['data']['normalizers_path'])
+        self.normalized_data_path = Path(config['data']['raw_data_path']).parent / 'normalized_data.csv'
         self.config_manager = ConfigManager()
         self.day_of_week_categories = [str(i) for i in range(7)]
         self.month_categories = [str(i) for i in range(1, 13)]
@@ -188,6 +189,7 @@ class PreprocessingUtils:
         """Zapisuje normalizery do pliku, jeśli plik jeszcze nie istnieje."""
         if not self.normalizers_path.exists():
             try:
+                self.normalizers_path.parent.mkdir(parents=True, exist_ok=True)
                 with open(self.normalizers_path, 'wb') as f:
                     pickle.dump(normalizers, f)
                 logger.info(f"Zapisano normalizery do: {self.normalizers_path}")
@@ -255,18 +257,27 @@ class PreprocessingUtils:
         # Normalizacja
         normalizers = self.load_normalizers()
         new_normalizers = {}
+        normalized_df = df.copy()  # Kopia do zapisu znormalizowanych danych
         for feature in self.numeric_features:
             if feature in df.columns:
-                if feature in normalizers:
-                    df[feature] = normalizers[feature].transform(df[feature].values)
-                else:
+                if feature not in normalizers:
                     normalizer = TorchNormalizer()
                     df[feature] = normalizer.fit_transform(df[feature].values)
                     new_normalizers[feature] = normalizer
+                else:
+                    df[feature] = normalizers[feature].transform(df[feature].values)
+                normalized_df[feature] = df[feature]  # Aktualizacja znormalizowanej kopii
 
         # Zapisz nowe normalizery, jeśli istnieją
         if new_normalizers:
             self.save_normalizers(new_normalizers)
+
+        # Zapisz znormalizowane dane do pliku normalized_data.csv dla debugowania
+        try:
+            normalized_df.to_csv(self.normalized_data_path, index=False)
+            logger.info(f"Znormalizowane dane zapisano do: {self.normalized_data_path}")
+        except Exception as e:
+            logger.error(f"Błąd zapisu znormalizowanych danych: {e}")
 
         # Konwersja kategorycznych
         for cat_col in self.categorical_features:
