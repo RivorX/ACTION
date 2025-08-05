@@ -100,13 +100,20 @@ async def start_training(regions: str = 'global', years: int = 3, use_optuna: bo
                 logger.error(f"Plik {old_checkpoint_path} nie istnieje w katalogu {models_dir}.")
                 raise FileNotFoundError(f"Plik {old_checkpoint_path} nie istnieje.")
             
-            if not old_normalizers_path.exists():
-                logger.warning(f"Plik normalizerów {old_normalizers_path} nie istnieje. Nowe normalizery zostaną wygenerowane.")
-            elif not normalizers_path.exists():
-                shutil.copy(old_normalizers_path, normalizers_path)
-                logger.info(f"Skopiowano normalizery z {old_normalizers_path} do {normalizers_path}")
+            if old_normalizers_path.exists():
+                logger.warning(
+                    f"Plik normalizerów {old_normalizers_path} istnieje. "
+                    f"Kopiowanie starych normalizerów może spowodować niezgodność z nową metodą normalizacji (np. robust dla RSI, Stochastic_K, Stochastic_D). "
+                    f"Zaleca się wygenerowanie nowych normalizerów dla spójności. Czy kontynuować z kopiowaniem? (tak/nie) [domyślnie: nie]: "
+                )
+                copy_normalizers = input().lower() == 'tak'
+                if copy_normalizers and not normalizers_path.exists():
+                    shutil.copy(old_normalizers_path, normalizers_path)
+                    logger.info(f"Skopiowano normalizery z {old_normalizers_path} do {normalizers_path}")
+                else:
+                    logger.info(f"Pominięto kopiowanie normalizerów. Nowe normalizery zostaną wygenerowane podczas preprocessingu.")
             else:
-                logger.info(f"Plik normalizerów {normalizers_path} już istnieje, pomijam kopiowanie.")
+                logger.info(f"Plik normalizerów {old_normalizers_path} nie istnieje. Nowe normalizery zostaną wygenerowane.")
 
             logger.info("Budowanie modelu dla transfer learningu...")
             new_model = build_model(dataset, config)

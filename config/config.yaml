@@ -2,7 +2,7 @@
 # Ten plik zawiera ustawienia dla modelu, treningu, danych i predykcji
 
 # Nazwa modelu
-model_name: Gen5_1
+model_name: Gen5_2
 
 # Ustawienia modelu
 model:

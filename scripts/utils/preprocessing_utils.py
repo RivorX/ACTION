@@ -22,7 +22,9 @@ class FeatureEngineer:
         gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
         rs = gain / loss
-        return 100 - (100 / (1 + rs))
+        rsi = 100 - (100 / (1 + rs))
+        rsi = rsi.fillna(0).clip(lower=0, upper=100)  # Zapewnienie zakresu [0, 100]
+        return rsi
 
     @staticmethod
     def calculate_macd(prices: pd.Series) -> tuple:
@@ -41,7 +43,7 @@ class FeatureEngineer:
         high_14 = group['High'].rolling(window=14).max()
         denominator = high_14 - low_14
         stochastic_k = 100 * (group['Close'] - low_14) / denominator.where(denominator != 0, 1e-10)
-        stochastic_k = stochastic_k.replace([np.inf, -np.inf], 0)
+        stochastic_k = stochastic_k.replace([np.inf, -np.inf], 0).clip(lower=0, upper=100)  # Zapewnienie zakresu [0, 100]
         return stochastic_k
 
     @staticmethod
@@ -166,9 +168,10 @@ class PreprocessingUtils:
         ]
         self.log_features = [
             "Open", "High", "Low", "Close", "Volume", "MA50", "BB_width",
-            "Tenkan_sen", "Kijun_sen", "Senkou_Span_A"
+            "BB_upper", "BB_lower", "OBV", "Tenkan_sen", "Kijun_sen", "Senkou_Span_A"
         ]
         self.categorical_features = ["Day_of_Week", "Month"]
+        self.robust_features = ["RSI", "Stochastic_K", "Stochastic_D"]  # Cechy używające normalizacji robust
 
     def load_normalizers(self) -> dict:
         """Wczytuje normalizery z pliku."""
@@ -176,7 +179,8 @@ class PreprocessingUtils:
             try:
                 with open(self.normalizers_path, 'rb') as f:
                     normalizers = pickle.load(f)
-                logger.info(f"Wczytano normalizery z: {self.normalizers_path}")
+                for feature, normalizer in normalizers.items():
+                    logger.info(f"Wczytano normalizer dla {feature}: metoda={getattr(normalizer, 'method', 'standard')}")
                 return normalizers
             except Exception as e:
                 logger.error(f"Błąd wczytywania normalizerów: {e}")
@@ -260,12 +264,12 @@ class PreprocessingUtils:
         normalized_df = df.copy()  # Kopia do zapisu znormalizowanych danych
         for feature in self.numeric_features:
             if feature in df.columns:
-                if feature not in normalizers:
-                    normalizer = TorchNormalizer()
-                    df[feature] = normalizer.fit_transform(df[feature].values)
-                    new_normalizers[feature] = normalizer
+                if feature in self.robust_features:
+                    normalizer = normalizers.get(feature, TorchNormalizer(method='robust'))
                 else:
-                    df[feature] = normalizers[feature].transform(df[feature].values)
+                    normalizer = normalizers.get(feature, TorchNormalizer())
+                df[feature] = normalizer.fit_transform(df[feature].values) if feature not in normalizers else normalizer.transform(df[feature].values)
+                new_normalizers[feature] = normalizer
                 normalized_df[feature] = df[feature]  # Aktualizacja znormalizowanej kopii
 
         # Zapisz nowe normalizery, jeśli istnieją
@@ -309,7 +313,7 @@ class PreprocessingUtils:
             "time_varying_known_reals": [f for f in valid_numeric_features if f not in ["Relative_Returns", "Log_Returns", "Future_Volume", "Future_Volatility"]],
             "time_varying_known_categoricals": valid_categorical_features,
             "time_varying_unknown_reals": ["Relative_Returns"],
-            "target_normalizer": normalizers.get("Relative_Returns", TorchNormalizer()),
+            "target_normalizer": normalizers.get("Relative_Returns", TorchNormalizer(method='robust' if "Relative_Returns" in self.robust_features else 'standard')),
             "allow_missing_timesteps": True,
             "add_encoder_length": False,
             "categorical_encoders": {
