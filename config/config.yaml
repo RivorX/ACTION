@@ -2,18 +2,18 @@
 # Ten plik zawiera ustawienia dla modelu, treningu, danych i predykcji
 
 # Nazwa modelu
-model_name: Gen5_2
+model_name: Gen5_3_1
 
 # Ustawienia modelu
 model:
   # Parametry modelu
   max_prediction_length: 30      # Maksymalna długość predykcji (dni)
   min_encoder_length: 50         # Minimalna długość danych wejściowych
-  max_encoder_length: 180        # Maksymalna długość danych historycznych
+  max_encoder_length: 90        # Maksymalna długość danych historycznych
   hidden_size: 128               # Rozmiar warstwy ukrytej
   attention_head_size: 4         # Liczba głowic uwagi
   dropout: 0.3                   # Współczynnik dropout dla stabilności
-  learning_rate: 0.001           # Współczynnik uczenia
+  learning_rate: 0.0005           # Współczynnik uczenia
   lstm_layers: 2                 # Liczba warstw LSTM
   use_quantile_loss: true        # Włączenie straty kwantylowej
   quantiles: [0.1, 0.5, 0.9]     # Kwantyle dla predykcji
@@ -62,11 +62,11 @@ model:
 # Ustawienia treningu
 training:
   max_epochs: 100                # Maksymalna liczba epok
-  batch_size: 128                # Rozmiar partii dla treningu
+  batch_size: 256                # Rozmiar partii dla treningu
   early_stopping_patience: 10    # Cierpliwość dla wczesnego zatrzymania
   reduce_lr_patience: 3          # Cierpliwość dla redukcji współczynnika uczenia
   reduce_lr_factor: 0.6          # Czynnik redukcji współczynnika uczenia
-  weight_decay: 0.1              # Współczynnik weight decay
+  weight_decay: 0.01              # Współczynnik weight decay
   gradient_clip_val: 0.5         # Wartość klipu gradientu
   monitor_metric: val_loss       # Metryka do monitorowania (val_loss lub val_combined_metric)
   optuna_trials: 10              # Liczba prób dla optymalizacji hiperparametrów

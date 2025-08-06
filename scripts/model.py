@@ -350,33 +350,57 @@ class CustomTemporalFusionTransformer(LightningModule):
         relative_returns_normalizer = normalizers.get('Relative_Returns') or self.dataset.target_normalizer
         if relative_returns_normalizer:
             try:
-                y_hat_denorm = relative_returns_normalizer.inverse_transform(y_hat.float())
-                y_target_denorm = relative_returns_normalizer.inverse_transform(y_target.float())
-                
+
+                # Upewnij się, że tensory są na CPU przed inverse_transform
+                y_hat_cpu = y_hat.float().detach().cpu()
+                y_target_cpu = y_target.float().detach().cpu()
+
+                # Spłaszcz do 2D jeśli trzeba
+                orig_y_hat_shape = y_hat_cpu.shape
+                orig_y_target_shape = y_target_cpu.shape
+                if y_hat_cpu.ndim == 3:
+                    y_hat_2d = y_hat_cpu.reshape(-1, y_hat_cpu.shape[-1])
+                else:
+                    y_hat_2d = y_hat_cpu
+                if y_target_cpu.ndim == 3:
+                    y_target_2d = y_target_cpu.reshape(-1, y_target_cpu.shape[-1])
+                else:
+                    y_target_2d = y_target_cpu
+
+                y_hat_denorm = relative_returns_normalizer.inverse_transform(y_hat_2d)
+                y_target_denorm = relative_returns_normalizer.inverse_transform(y_target_2d)
+
+                # Przywróć oryginalny kształt
+                y_hat_denorm = y_hat_denorm.reshape(orig_y_hat_shape)
+                y_target_denorm = y_target_denorm.reshape(orig_y_target_shape)
+
                 if 'encoder_cont' in x:
                     encoder_cont = x['encoder_cont'][0]
                     close_normalizer = normalizers.get('Close')
                     if close_normalizer is not None:
                         try:
                             numeric_features = [
-                                "Open", "High", "Low", "Close", "Volume", "MA50", "RSI",
-                                "MACD_Signal", "MACD_Histogram", "Stochastic_K", "Stochastic_D", "OBV",
-                                "ADX", "Tenkan_sen", "Kijun_sen", "Senkou_Span_A", "Momentum_20d",
-                                "BB_width", "Relative_Returns", "Log_Returns", "Future_Volume", "Future_Volatility"
+                                "High", "Low", "Close", "Volume", "RSI",
+                                "MACD_Histogram", "Stochastic_D",
+                                "ADX", "Kijun_sen", "Senkou_Span_A", "Momentum_20d",
+                                "BB_upper", "BB_lower", "Relative_Returns", "Log_Returns", "Future_Volume", "Future_Volatility",
+                                "ROC_30d", "DMI_plus", "DMI_minus", "Up_Days_30d", "Rolling_Volatility_30d", "ATR_14"
                             ]
                             close_idx = numeric_features.index("Close") if "Close" in numeric_features else None
-                            
+
                             if close_idx is not None:
                                 last_close_norm = encoder_cont[-1, close_idx]
-                                last_close_denorm = close_normalizer.inverse_transform(torch.tensor([[last_close_norm]], device=self.device))
-                                last_close_price = np.expm1(last_close_denorm.cpu().numpy())[0, 0]
-                                
+                                last_close_norm_cpu = torch.tensor([[last_close_norm]], device=self.device).detach().cpu()
+                                last_close_denorm = close_normalizer.inverse_transform(last_close_norm_cpu)
+                                last_close_denorm_cpu = last_close_denorm if isinstance(last_close_denorm, np.ndarray) else last_close_denorm.cpu().numpy()
+                                last_close_price = np.expm1(last_close_denorm_cpu)[0, 0]
+
                                 if last_close_price > 10000:
                                     logger.warning(f"Bardzo wysoka cena Close: {last_close_price:.2f}")
-                                    last_close_price_alt = last_close_denorm.cpu().numpy()[0, 0]
+                                    last_close_price_alt = last_close_denorm_cpu[0, 0]
                                     if 10 <= last_close_price_alt <= 1000:
                                         last_close_price = last_close_price_alt
-                                
+
                                 logger.info(f"Ostatnia cena Close z batcha: {last_close_price:.2f}")
                                 self._convert_to_prices(y_hat_denorm, y_target_denorm, last_close_price, batch_idx)
                             else:
@@ -393,52 +417,69 @@ class CustomTemporalFusionTransformer(LightningModule):
             logger.warning("Brak normalizera dla 'Relative_Returns'")
 
     def _convert_to_prices(self, y_hat_denorm, y_target_denorm, last_close_price, batch_idx):
-        def to_scalar(tensor_val):
-            if hasattr(tensor_val, 'numel') and tensor_val.numel() == 1:
-                return tensor_val.item()
-            elif hasattr(tensor_val, 'cpu'):
-                val = tensor_val.cpu().numpy()
+        import numpy as np
+        def to_scalar(val):
+            # Obsługuje tensor, numpy, float
+            if hasattr(val, 'item'):
+                return val.item()
+            elif isinstance(val, np.ndarray):
                 return val.item() if val.size == 1 else val.flatten()[0]
             else:
-                return float(tensor_val)
-        
+                return float(val)
+
+        # Ustal wymiar tablicy/tensora
+        def get_ndim(arr):
+            if hasattr(arr, 'ndim'):
+                return arr.ndim
+            elif hasattr(arr, 'dim'):
+                return arr.dim()
+            else:
+                return len(arr.shape)
+
         y_hat_prices = []
         y_target_prices = []
         current_price_pred = last_close_price
         current_price_target = last_close_price
-        
-        for i in range(min(5, y_hat_denorm.shape[1])):
-            if y_hat_denorm.dim() == 3:
+
+        seq_len = y_hat_denorm.shape[1] if len(y_hat_denorm.shape) > 1 else 1
+        for i in range(min(5, seq_len)):
+            if get_ndim(y_hat_denorm) == 3:
                 relative_return_pred = to_scalar(y_hat_denorm[0, i, 1])
                 relative_return_pred_lower = to_scalar(y_hat_denorm[0, i, 0])
                 relative_return_pred_upper = to_scalar(y_hat_denorm[0, i, 2])
             else:
                 logger.warning(f"y_hat_denorm ma nieoczekiwany kształt: {y_hat_denorm.shape}")
-                relative_return_pred = to_scalar(y_hat_denorm[0, i])
+                relative_return_pred = to_scalar(y_hat_denorm[0, i]) if len(y_hat_denorm.shape) > 2 else to_scalar(y_hat_denorm[i])
                 relative_return_pred_lower = relative_return_pred
                 relative_return_pred_upper = relative_return_pred
-            
+
             next_price_pred = current_price_pred * (1 + relative_return_pred)
             next_price_pred_lower = current_price_pred * (1 + relative_return_pred_lower)
             next_price_pred_upper = current_price_pred * (1 + relative_return_pred_upper)
-            
+
             y_hat_prices.append({
                 'median': next_price_pred,
                 'lower': next_price_pred_lower,
                 'upper': next_price_pred_upper
             })
             current_price_pred = next_price_pred
-            
-            relative_return_target = to_scalar(y_target_denorm[0, i])
+
+            # y_target_denorm może być 2D lub 3D, ale zwykle [batch, seq] lub [batch, seq, 1]
+            if get_ndim(y_target_denorm) == 3:
+                relative_return_target = to_scalar(y_target_denorm[0, i, 0])
+            elif get_ndim(y_target_denorm) == 2:
+                relative_return_target = to_scalar(y_target_denorm[0, i])
+            else:
+                relative_return_target = to_scalar(y_target_denorm[i])
             next_price_target = current_price_target * (1 + relative_return_target)
             y_target_prices.append(next_price_target)
             current_price_target = next_price_target
-        
+
         pred_medians = [f"{p['median']:.2f}" for p in y_hat_prices]
         pred_lowers = [f"{p['lower']:.2f}" for p in y_hat_prices]
         pred_uppers = [f"{p['upper']:.2f}" for p in y_hat_prices]
         target_prices_formatted = [f"{p:.2f}" for p in y_target_prices]
-        
+
         logger.info(
             f"Validation batch {batch_idx} - RZECZYWISTE CENY:\n"
             f"  Predykcje (mediana): {pred_medians}\n"
@@ -479,7 +520,7 @@ class CustomTemporalFusionTransformer(LightningModule):
         """Konfiguruje optymalizator i scheduler."""
         learning_rate = self.hyperparams.get('learning_rate', self.model_config.config['model']['learning_rate'])
         weight_decay = self.model_config.config['training']['weight_decay']
-        optimizer = torch.optim.AdamW(self.parameters(), lr=learning_rate, weight_decay=weight_decay)
+        optimizer = torch.optim.RMSprop(self.parameters(), lr=learning_rate, weight_decay=weight_decay, momentum=0.9)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer,
             mode='min',

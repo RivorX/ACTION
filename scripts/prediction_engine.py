@@ -146,20 +146,34 @@ def generate_predictions(config, dataset, model, ticker_data):
     logger.info(f"Kształt predictions.output: {predictions.output.shape}")
     
     transfer_time = time.time()
-    pred_array = predictions.output.to('cpu')
+    pred_array = predictions.output
+    # Jeśli to tensor, przenieś na CPU i zamień na numpy
+    if isinstance(pred_array, torch.Tensor):
+        pred_array = pred_array.cpu().numpy()
     transfer_duration = time.time() - transfer_time
     logger.info(f"Transfer predykcji na CPU zajął: {transfer_duration:.3f} sekundy")
-    
+
     denorm_time = time.time()
     target_normalizer = dataset.target_normalizer
-    pred_array = target_normalizer.inverse_transform(pred_array)
+    # Jeśli target_normalizer wymaga tensora, zamień z powrotem na tensor
+    if hasattr(target_normalizer, 'inverse_transform'):
+        if isinstance(pred_array, np.ndarray):
+            pred_array_torch = torch.from_numpy(pred_array)
+        else:
+            pred_array_torch = pred_array
+        pred_array = target_normalizer.inverse_transform(pred_array_torch)
+        if isinstance(pred_array, torch.Tensor):
+            pred_array = pred_array.cpu().numpy()
+    # Odwrotność sign-preserving log1p dla Relative_Returns
+    pred_array = np.sign(pred_array) * (np.expm1(np.abs(pred_array)))
+
     last_close_price = ticker_data['Close'].iloc[-1]
-    
     normalizers = preprocessing_utils.load_normalizers()
     close_normalizer = normalizers.get('Close', target_normalizer)
-    
     last_close_denorm = close_normalizer.inverse_transform(torch.tensor([[last_close_price]]).float())
-    last_close_denorm = np.expm1(last_close_denorm.numpy())[0, 0]
+    if isinstance(last_close_denorm, torch.Tensor):
+        last_close_denorm = last_close_denorm.cpu().numpy()
+    last_close_denorm = np.expm1(last_close_denorm)[0, 0]
     denorm_duration = time.time() - denorm_time
     logger.info(f"Denormalizacja wyników zajęła: {denorm_duration:.3f} sekundy")
     

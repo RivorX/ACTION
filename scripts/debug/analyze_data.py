@@ -46,18 +46,25 @@ class DataAnalyzer:
         self.output_dir = Path('logs/debug')
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.numeric_features = [
-            "Open", "High", "Low", "Close", "Volume", "MA50", "RSI",
-            "MACD_Signal", "MACD_Histogram", "Stochastic_K", "Stochastic_D", "OBV",
-            "ADX", "Tenkan_sen", "Kijun_sen", "Senkou_Span_A", "Momentum_20d",
-            "BB_width", "Relative_Returns", "Log_Returns", "Future_Volume", "Future_Volatility"
+            "High", "Low", "Close", "Volume", "RSI",
+            "MACD_Histogram", "Stochastic_D",
+            "ADX", "Kijun_sen", "Senkou_Span_A", "Momentum_20d",
+            "BB_upper", "BB_lower", "Relative_Returns", "Log_Returns", "Future_Volume", "Future_Volatility",
+            "ROC_30d", "DMI_plus", "DMI_minus", "Up_Days_30d", "Rolling_Volatility_30d", "ATR_14"
         ]
         self.expected_ranges = {
             "RSI": (0, 100),
-            "Stochastic_K": (0, 100),
+            # "Stochastic_K": (0, 100),
             "Stochastic_D": (0, 100),
             "ADX": (0, 100),
-            "BB_width": (0, float('inf')),
-            "Future_Volatility": (0, float('inf'))
+            # "BB_width": (0, float('inf')),
+            "Future_Volatility": (0, float('inf')),
+            "ROC_30d": (-1, 1),
+            "DMI_plus": (0, 100),
+            "DMI_minus": (0, 100),
+            "Up_Days_30d": (0, 30),
+            "Rolling_Volatility_30d": (0, 1),
+            "ATR_14": (0, float('inf'))
         }
 
     async def fetch_data(self, tickers: list) -> pd.DataFrame:
