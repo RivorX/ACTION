@@ -46,7 +46,7 @@ def clean_temp_dir(temp_dir):
                     break
                 except PermissionError as e:
                     logger.warning(f"Failed to remove temporary file {file}: {e}. Retrying...")
-                    time.sleep(0.1)  # Short delay to allow file release
+                    time.sleep(0.1)
                 except Exception as e:
                     logger.error(f"Unexpected error while removing {file}: {e}")
                     break
@@ -58,6 +58,7 @@ class StockPredictor:
     def __init__(self, config, years):
         self.config = config
         self.years = years
+        self.max_prediction_length = config['model']['max_prediction_length']  # Pobierz z config
         self.fetcher = DataFetcher(ConfigManager(), years)
         self.temp_dir = os.path.join(project_root, 'data', 'temp')
         os.makedirs(self.temp_dir, exist_ok=True)
@@ -78,14 +79,18 @@ class StockPredictor:
             if new_data.empty:
                 raise ValueError(f"No data available for {ticker}")
 
+            # Konwersja dat na tz-naive
+            new_data['Date'] = pd.to_datetime(new_data['Date']).dt.tz_localize(None)
             new_data.to_csv(temp_raw_data_path, index=False)
             logger.info(f"Data for {ticker} saved to {temp_raw_data_path}")
 
             _, dataset, normalizers, model = load_data_and_model(self.config, ticker, temp_raw_data_path)
             ticker_data, original_close = preprocess_data(self.config, new_data, ticker, normalizers)
+            logger.info(f"Długość ticker_data: {len(ticker_data)}, długość original_close: {len(original_close)}")
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             with torch.no_grad():
                 median, lower_bound, upper_bound = generate_predictions(self.config, dataset, model, ticker_data)
+            logger.info(f"Długość median: {len(median)}, lower_bound: {len(lower_bound)}, upper_bound: {len(upper_bound)}")
             
             return ticker_data, original_close, median, lower_bound, upper_bound
         except Exception as e:
@@ -117,7 +122,7 @@ class StockPredictor:
                 raise ValueError(f"No data available for {ticker}")
             
             full_data = full_data[full_data['Ticker'] == ticker].copy()
-            full_data['Date'] = pd.to_datetime(full_data['Date'], utc=True)
+            full_data['Date'] = pd.to_datetime(full_data['Date']).dt.tz_localize(None)
             new_data = full_data[full_data['Date'] <= trim_date].copy()
             if new_data.empty:
                 raise ValueError(f"No data before {trim_date} for {ticker}")
@@ -159,6 +164,26 @@ def main():
     config_manager = ConfigManager()  # Singleton
     config = config_manager.config
     years = config['prediction']['years']
+    max_prediction_length = config['model']['max_prediction_length']  # Pobierz z config
+
+    # Inicjalizacja stanu sesji dla okresu historycznego
+    if 'historical_period_days' not in st.session_state:
+        st.session_state.historical_period_days = 365  # Domyślnie 1 rok
+
+    # Opcje wyboru okresu historycznego
+    historical_period_options = {
+        "90 dni": 90,
+        "180 dni": 180,
+        "1 rok": 365,
+        "2 lata": 730,
+        "Cały okres": years * 365
+    }
+    selected_period = st.sidebar.selectbox(
+        "Wybierz okres historyczny dla wykresu:",
+        options=list(historical_period_options.keys()),
+        index=list(historical_period_options.keys()).index("1 rok")  # Domyślnie 1 rok
+    )
+    st.session_state.historical_period_days = historical_period_options[selected_period]
 
     predictor = StockPredictor(config, years)
     benchmark_tickers = load_benchmark_tickers(config)
@@ -184,11 +209,11 @@ def main():
         if st.button("Generuj predykcje"):
             with st.spinner('Trwa generowanie predykcji...'):
                 try:
-                    start_date = pd.Timestamp(datetime.now(), tz='UTC') - pd.Timedelta(days=years * 365)
+                    start_date = pd.Timestamp(datetime.now()).tz_localize(None) - pd.Timedelta(days=years * 365)
                     ticker_data, original_close, median, lower_bound, upper_bound = predictor.predict(
-                        ticker_input, start_date, datetime.now()
+                        ticker_input, start_date, datetime.now().replace(tzinfo=None)
                     )
-                    create_stock_plot(config, ticker_data, original_close, median, lower_bound, upper_bound, ticker_input)
+                    create_stock_plot(config, ticker_data, original_close, median, lower_bound, upper_bound, ticker_input, historical_period_days=st.session_state.historical_period_days)
                 except Exception as e:
                     st.error(f"Wystąpił błąd podczas generowania predykcji dla {ticker_input}: {str(e)}")
 
@@ -211,14 +236,13 @@ def main():
         if st.button("Porównaj predykcje z historią"):
             with st.spinner('Trwa porównywanie predykcji z historią...'):
                 try:
-                    max_prediction_length = config['model']['max_prediction_length']
-                    trim_date = pd.Timestamp(datetime.now(), tz='UTC') - pd.Timedelta(days=max_prediction_length)
+                    trim_date = pd.Timestamp(datetime.now()).tz_localize(None) - pd.Timedelta(days=max_prediction_length)
                     start_date = trim_date - pd.Timedelta(days=years * 365)
                     
                     ticker_data, original_close, median, lower_bound, upper_bound, historical_close = predictor.predict_historical(
-                        ticker_input, start_date, datetime.now(), trim_date
+                        ticker_input, start_date, datetime.now().replace(tzinfo=None), trim_date
                     )
-                    create_stock_plot(config, ticker_data, original_close, median, lower_bound, upper_bound, ticker_input, historical_close)
+                    create_stock_plot(config, ticker_data, original_close, median, lower_bound, upper_bound, ticker_input, historical_close, historical_period_days=st.session_state.historical_period_days)
                 except Exception as e:
                     st.error(f"Wystąpił błąd podczas porównywania predykcji z historią dla {ticker_input}: {str(e)}")
 
@@ -228,7 +252,7 @@ def main():
         if st.button("Generuj benchmark"):
             with st.spinner('Trwa generowanie benchmarku...'):
                 try:
-                    all_results = asyncio.run(create_benchmark_plot(config, benchmark_tickers, {}, years))
+                    all_results = asyncio.run(create_benchmark_plot(config, benchmark_tickers, {}, years, historical_period_days=st.session_state.historical_period_days))
                     benchmark_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                     save_benchmark_to_csv(benchmark_date, all_results, config['model_name'])
                 except Exception as e:
