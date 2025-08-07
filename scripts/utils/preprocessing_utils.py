@@ -174,13 +174,15 @@ class FeatureEngineer:
             return group
 
         df = df.groupby('Ticker').apply(apply_features).reset_index(drop=True)
-        df = df.dropna(subset=['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 'Ticker', 'Sector'])
+        df = df.dropna(subset=['Date', 'High', 'Low', 'Close', 'Volume', 'Ticker', 'Sector'])
         logger.info(f"Długość danych po dropna kluczowych kolumn: {len(df)}")
         return df
 
+import yaml
+
 class PreprocessingUtils:
     """Klasa do współdzielenia logiki preprocessingu danych giełdowych."""
-    
+
     def __init__(self, config: dict):
         self.config = config
         self.feature_engineer = FeatureEngineer()
@@ -188,19 +190,16 @@ class PreprocessingUtils:
         self.config_manager = ConfigManager()
         self.day_of_week_categories = [str(i) for i in range(7)]
         self.month_categories = [str(i) for i in range(1, 13)]
-        self.sectors = self.config_manager.get_sectors()
-        self.numeric_features = [
-            "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI",
-            "MACD", "MACD_Signal", "MACD_Histogram", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
-            "ADX", "CCI", "Tenkan_sen", "Kijun_sen", "Senkou_Span_A", "Senkou_Span_B", "ROC", "VWAP",
-            "Momentum_20d", "Close_to_MA_ratio", "BB_width", "Close_to_BB_upper", "Close_to_BB_lower",
-            "Relative_Returns", "Log_Returns", "Future_Volume", "Future_Volatility"
-        ]
-        self.log_features = [
-            "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "ATR", "BB_width",
-            "Tenkan_sen", "Kijun_sen", "Senkou_Span_A", "Senkou_Span_B", "VWAP"
-        ]
-        self.categorical_features = ["Day_of_Week", "Month"]
+
+        # Wczytaj features_config.yaml
+        features_config_path = config['data']['features_config']
+        with open(features_config_path, 'r', encoding='utf-8') as f:
+            features_config = yaml.safe_load(f)
+
+        self.numeric_features = features_config.get('numeric_features', [])
+        self.categorical_features = features_config.get('categorical_features', [])
+        self.log_features = features_config.get('log_features', [])
+        self.sectors = features_config.get('sectors', self.config_manager.get_sectors())
 
     def load_normalizers(self) -> dict:
         """Wczytuje normalizery z pliku."""
@@ -253,18 +252,21 @@ class PreprocessingUtils:
         df = self.feature_engineer.add_features(df).reset_index(drop=True)
         logger.info(f"Po add_features: df: {len(df)}")
         
+
         # Zachowaj oryginalne indeksy przed dropna
         original_indices = df.index
-        df = df.dropna(subset=['Close', 'Open', 'High', 'Low', 'Volume']).reset_index(drop=True)
+        # Usuwamy tylko te kolumny, które są w danych wejściowych
+        required_cols = [col for col in ['Close', 'High', 'Low', 'Volume'] if col in df.columns]
+        df = df.dropna(subset=required_cols).reset_index(drop=True)
         logger.info(f"Po dropna: df: {len(df)}, usunięto rekordy: {set(original_indices) - set(df.index)}")
         # Dopasuj original_close do przefiltrowanych indeksów
         original_close = original_close.loc[original_indices].reindex(df.index).fillna(0)
-        
+
         df = df[(df['Close'] > 0) & (df['High'] >= df['Low'])].reset_index(drop=True)
         logger.info(f"Po filtrze Close > 0 i High >= Low: df: {len(df)}")
         # Ponownie dopasuj original_close
         original_close = original_close.reindex(df.index).fillna(0)
-        
+
         df = self.feature_engineer.remove_outliers(df, 'Close').reset_index(drop=True)
         logger.info(f"Po remove_outliers: df: {len(df)}")
         # Ostateczne dopasowanie original_close

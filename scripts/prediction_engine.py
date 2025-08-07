@@ -110,8 +110,8 @@ def preprocess_data(config, ticker_data, ticker, normalizers, historical_mode=Fa
     start_time = time.time()
     preprocessing_utils = PreprocessingUtils(config)
     ticker_data, original_close = preprocessing_utils.preprocess_dataframe(ticker_data, ticker, historical_mode, trim_days)
-    ticker_data = ticker_data.reset_index(drop=True)  # Reset indeksów
-    original_close = original_close.reindex(ticker_data.index).fillna(0)  # Dopasuj original_close
+    ticker_data = ticker_data.reset_index(drop=True)
+    original_close = original_close.reindex(ticker_data.index).fillna(0)
     total_duration = time.time() - start_time
     logger.info(f"Całkowity czas preprocess_data: {total_duration:.3f} sekundy")
     return ticker_data, original_close

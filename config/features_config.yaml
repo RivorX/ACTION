@@ -1,0 +1,46 @@
+# Konfiguracja cech i sektorów dla modelu
+
+# Lista cech numerycznych
+numeric_features:
+  - Relative_Returns
+  - ADX
+  - High
+  - Stochastic_D
+  - Volume
+  - ROC_30d
+  - Senkou_Span_A
+  - Rolling_Volatility_30d
+  - BB_upper
+  - Close
+  - MACD_Histogram
+  - Kijun_sen
+  - BB_lower
+  - Low
+  - ATR_14
+  - RSI
+  - Up_Days_30d
+
+# Lista cech kategorycznych
+categorical_features:
+  - Sector
+  - Day_of_Week
+  - Month
+
+# Lista sektorów
+sectors:
+  - Technology
+  - Healthcare
+  - Financials
+  - Consumer Discretionary
+  - Consumer Staples
+  - Energy
+  - Utilities
+  - Industrials
+  - Materials
+  - Communication Services
+  - Real Estate
+  - Unknown
+
+# Cechy do logarytmowania
+log_features:
+  - Volume

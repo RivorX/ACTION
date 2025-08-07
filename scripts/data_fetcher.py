@@ -100,7 +100,7 @@ class DataFetcher:
             df.reset_index(inplace=True)
             df['Date'] = pd.to_datetime(df['Date'], utc=True)
             df.columns = [col.replace(' ', '_') for col in df.columns]
-            df = df.rename(columns={'Date': 'Date', 'Open': 'Open', 'High': 'High', 'Low': 'Low', 
+            df = df.rename(columns={'Date': 'Date', 'High': 'High', 'Low': 'Low', 
                                     'Close': 'Close', 'Volume': 'Volume'})
             df['Ticker'] = ticker
 
@@ -122,8 +122,8 @@ class DataFetcher:
                     df_extended.reset_index(inplace=True)
                     df_extended['Date'] = pd.to_datetime(df_extended['Date'], utc=True)
                     df_extended.columns = [col.replace(' ', '_') for col in df_extended.columns]
-                    df_extended = df_extended.rename(columns={'Date': 'Date', 'Open': 'Open', 'High': 'High', 
-                                                             'Low': 'Low', 'Close': 'Close', 'Volume': 'Volume'})
+                    df_extended = df_extended.rename(columns={'Date': 'Date', 'High': 'High', 'Low': 'Low', 
+                                                             'Close': 'Close', 'Volume': 'Volume'})
                     df_extended['Ticker'] = ticker
                     df_extended['Sector'] = sector
                     actual_days_extended = len(df_extended)
@@ -135,7 +135,7 @@ class DataFetcher:
             df = df[df['Date'] >= pd.Timestamp(start_date, tz='UTC')].reset_index(drop=True)
 
             # Filtruj wymagane kolumny
-            required_cols = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 'Ticker', 'Sector']
+            required_cols = ['Date', 'High', 'Low', 'Close', 'Volume', 'Ticker', 'Sector']
             df = df[required_cols]
 
             return df
@@ -164,7 +164,7 @@ class DataFetcher:
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
             for ticker, result in zip(tickers, results):
-                if isinstance(result, pd.DataFrame) and not result.empty and all(col in result.columns for col in ['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 'Ticker', 'Sector']):
+                if isinstance(result, pd.DataFrame) and not result.empty and all(col in result.columns for col in ['Date', 'High', 'Low', 'Close', 'Volume', 'Ticker', 'Sector']):
                     all_data.append(result)
                 else:
                     logger.warning(f"Pominięto ticker {ticker} z powodu niekompletnych danych lub błędu")

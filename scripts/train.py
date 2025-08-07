@@ -70,23 +70,23 @@ def objective(trial, train_dataset: TimeSeriesDataSet, val_dataset: TimeSeriesDa
 def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = True, continue_training: bool = False):
     logger.info("Rozpoczynanie treningu modelu...")
     
-    df = pd.read_csv(config['data']['raw_data_path']).reset_index(drop=True)  # Reset indeksów
+    df = pd.read_csv(config['data']['raw_data_path']).reset_index(drop=True)
     selected_tickers = config['data']['tickers']
-    df = df[df['Ticker'].isin(selected_tickers)].reset_index(drop=True)  # Reset indeksów
+    df = df[df['Ticker'].isin(selected_tickers)].reset_index(drop=True)
     if df.empty:
         raise ValueError(f"Brak danych dla wybranych tickerów: {selected_tickers}")
 
     preprocessing_utils = PreprocessingUtils(config)
     df, _ = preprocessing_utils.preprocess_dataframe(df)
-    df = df.reset_index(drop=True)  # Reset indeksów po preprocessingu
+    df = df.reset_index(drop=True)
 
     min_val_records = config['model'].get('min_prediction_length', 1) + config['model'].get('min_encoder_length', 1)
     group_counts = df.groupby('group_id').size().reset_index(name='count')
     valid_groups = group_counts[group_counts['count'] >= min_val_records]['group_id']
-    df = df[df['group_id'].isin(valid_groups)].reset_index(drop=True)  # Reset indeksów
+    df = df[df['group_id'].isin(valid_groups)].reset_index(drop=True)
 
-    train_df = df[df['time_idx'] <= int(df['time_idx'].max() * 0.8)].reset_index(drop=True)  # Reset indeksów
-    val_df = df[df['time_idx'] > int(df['time_idx'].max() * 0.8)].reset_index(drop=True)  # Reset indeksów
+    train_df = df[df['time_idx'] <= int(df['time_idx'].max() * 0.8)].reset_index(drop=True)
+    val_df = df[df['time_idx'] > int(df['time_idx'].max() * 0.8)].reset_index(drop=True)
     
     if df.empty or train_df.empty or val_df.empty:
         raise ValueError(f"Zbiory danych są puste po filtrowaniu: df={len(df)}, train_df={len(train_df)}, val_df={len(val_df)}")
