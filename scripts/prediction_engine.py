@@ -49,10 +49,12 @@ async def load_data_and_model_async(config, ticker, temp_raw_data_path, historic
         logger.error(f"Błąd wczytywania datasetu: {e}")
         raise
 
+    # Użycie ConfigManager do ładowania normalizerów
     try:
-        with open(config['data']['normalizers_path'], 'rb') as f:
-            normalizers = pickle.load(f)
-        logger.info(f"Wczytano normalizery z: {config['data']['normalizers_path']}")
+        config_manager = ConfigManager()
+        model_name = config['model_name']
+        normalizers = config_manager.load_normalizers(model_name)
+        logger.info(f"Wczytano normalizery dla modelu: {model_name}")
     except Exception as e:
         logger.error(f"Błąd wczytywania normalizerów: {e}")
         raise
@@ -73,7 +75,6 @@ async def load_data_and_model_async(config, ticker, temp_raw_data_path, historic
         logger.warning("Brak normalizera dla Relative_Returns w normalizers.pkl, pomijam porównanie.")
 
     try:
-        model_name = config['model_name']
         model_path = os.path.join(config['paths']['models_dir'], f"{model_name}.pth")
         if not os.path.exists(model_path):
             logger.error(f"Plik modelu {model_path} nie istnieje.")
@@ -184,7 +185,7 @@ def generate_predictions(config, dataset, model, ticker_data):
         ticker_data,
         predict_mode=True,
         max_prediction_length=config['model']['max_prediction_length'],
-        static_categoricals=["Sector"],  # Dodajemy Sector jako statyczną zmienną kategoryczną
+        static_categoricals=["Sector"],
         categorical_encoders={
             'Sector': NaNLabelEncoder(add_nan=False),
             'Day_of_Week': NaNLabelEncoder(add_nan=False),
@@ -192,7 +193,6 @@ def generate_predictions(config, dataset, model, ticker_data):
         }
     ).to_dataloader(train=False, batch_size=config['prediction']['batch_size'], num_workers=4)
 
-    # Użycie float32 w autocast
     with torch.no_grad(), torch.amp.autocast(device_type='cuda' if torch.cuda.is_available() else 'cpu', dtype=torch.float32):
         predictions = model.predict(ticker_dataset, mode="quantiles", return_x=True)
     elapsed_time = time.time() - start_time
@@ -204,9 +204,11 @@ def generate_predictions(config, dataset, model, ticker_data):
     pred_array = target_normalizer.inverse_transform(pred_array)
     last_close_price = ticker_data['Close'].iloc[-1]
 
+    # Użycie ConfigManager do ładowania normalizerów
     try:
-        with open(config['data']['normalizers_path'], 'rb') as f:
-            normalizers = pickle.load(f)
+        config_manager = ConfigManager()
+        model_name = config['model_name']
+        normalizers = config_manager.load_normalizers(model_name)
         close_normalizer = normalizers.get('Close', target_normalizer)
     except:
         close_normalizer = target_normalizer

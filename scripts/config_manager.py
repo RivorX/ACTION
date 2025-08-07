@@ -1,6 +1,7 @@
 import yaml
 import logging
 from pathlib import Path
+import pickle
 
 # Konfiguracja logowania
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -8,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 class ConfigManager:
     """Klasa do zarządzania konfiguracją z pliku YAML z wzorcem Singleton."""
-    
+
     _instance = None
 
     def __new__(cls, config_path: str = "config/config.yaml"):
@@ -19,15 +20,7 @@ class ConfigManager:
         return cls._instance
 
     def _load_config(self) -> dict:
-        """Wczytuje konfigurację z pliku YAML.
-        
-        Returns:
-            dict: Słownik z konfiguracją.
-        
-        Raises:
-            FileNotFoundError: Jeśli plik konfiguracyjny nie istnieje.
-            yaml.YAMLError: Jeśli plik YAML jest nieprawidłowy.
-        """
+        """Wczytuje konfigurację z pliku YAML."""
         try:
             with open(self.config_path, 'r') as f:
                 config = yaml.safe_load(f)
@@ -41,15 +34,7 @@ class ConfigManager:
             raise
 
     def get(self, key: str, default=None):
-        """Pobiera wartość z konfiguracji według klucza.
-        
-        Args:
-            key (str): Klucz w formacie 'sekcja.podsekcja'.
-            default: Wartość domyślna, jeśli klucz nie istnieje.
-        
-        Returns:
-            Wartość dla podanego klucza lub default, jeśli klucz nie istnieje.
-        """
+        """Pobiera wartość z konfiguracji według klucza."""
         keys = key.split('.')
         value = self.config
         try:
@@ -59,3 +44,33 @@ class ConfigManager:
         except (KeyError, TypeError):
             logger.warning(f"Klucz {key} nie znaleziony w konfiguracji, zwracam {default}")
             return default
+
+    def load_normalizers(self, model_name: str) -> dict:
+        """Ładuje normalizery z pliku dla podanego modelu."""
+        normalizers_path = Path("models/normalizers") / f"{model_name}_normalizers.pkl"
+        if normalizers_path.exists():
+            try:
+                with open(normalizers_path, "rb") as f:
+                    normalizers = pickle.load(f)
+                logger.info(f"Normalizery wczytane z {normalizers_path}")
+                return normalizers
+            except Exception as e:
+                logger.error(f"Błąd podczas ładowania normalizerów: {e}")
+                return {}
+        else:
+            logger.warning(f"Plik normalizerów {normalizers_path} nie istnieje")
+            return {}
+
+    def save_normalizers(self, model_name: str, normalizers: dict):
+        """Zapisuje normalizery do pliku dla podanego modelu, jeśli plik nie istnieje."""
+        normalizers_path = Path("models/normalizers") / f"{model_name}_normalizers.pkl"
+        normalizers_path.parent.mkdir(parents=True, exist_ok=True)
+        if normalizers_path.exists():
+            logger.warning(f"Normalizery dla modelu {model_name} już istnieją w {normalizers_path}. Nie zapisuję ponownie.")
+            return
+        try:
+            with open(normalizers_path, "wb") as f:
+                pickle.dump(normalizers, f)
+            logger.info(f"Normalizery zapisane do {normalizers_path}")
+        except Exception as e:
+            logger.error(f"Błąd podczas zapisu normalizerów: {e}")

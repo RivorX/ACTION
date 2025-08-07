@@ -12,7 +12,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 def create_directories():
-    directories = ['data', 'models', 'config', 'logs']
+    directories = ['data', 'models', 'models/normalizers', 'config', 'logs']
     for directory in directories:
         if not os.path.exists(directory):
             os.makedirs(directory)

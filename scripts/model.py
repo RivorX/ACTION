@@ -8,6 +8,11 @@ from typing import Dict, Any, Optional, Union, List, Tuple
 import pickle
 from pathlib import Path
 import numpy as np
+import sys
+import os
+# Dodaj katalog główny do ścieżek systemowych
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+from scripts.config_manager import ConfigManager 
 
 # Konfiguracja logowania
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -17,9 +22,11 @@ logger = logging.getLogger(__name__)
 torch.set_float32_matmul_precision('medium')
 
 def move_to_device(obj: Any, device: torch.device) -> Any:
-    """Rekurencyjnie przenosi tensory na wskazane urządzenie."""
+    """Rekurencyjnie przenosi tensory na wskazane urządzenie asynchronicznie z non_blocking=True."""
     if isinstance(obj, torch.Tensor):
-        return obj.to(device)
+        if obj.device == device:
+            return obj
+        return obj.to(device, non_blocking=True)
     elif isinstance(obj, dict):
         return {key: move_to_device(val, device) for key, val in obj.items()}
     elif isinstance(obj, (list, tuple)):
@@ -106,18 +113,18 @@ class CustomTemporalFusionTransformer(LightningModule):
         super().__init__()
         self.model_config = ModelConfig(config)
         self.hyperparams = hyperparams if hyperparams else self.model_config.default_hyperparams
-        self.normalizers_path = Path(config['data']['normalizers_path'])
-        self.dataset = dataset  # Przechowuj dataset, aby uzyskać dostęp do target_normalizer
+        self.model_name = config['model_name'] 
+        self.dataset = dataset
+        self.config_manager = ConfigManager()   
         self._load_normalizers()
         self._initialize_model(dataset)
         self._save_hyperparameters()
 
     def _load_normalizers(self):
-        """Wczytuje normalizery z pliku."""
+        """Wczytuje normalizery za pomocą ConfigManager."""
         try:
-            with open(self.normalizers_path, 'rb') as f:
-                self.normalizers = pickle.load(f)
-            logger.info(f"Wczytano normalizery z: {self.normalizers_path}")
+            self.normalizers = self.config_manager.load_normalizers(self.model_name)
+            logger.info(f"Wczytano normalizery dla modelu: {self.model_name}")
         except Exception as e:
             logger.error(f"Błąd wczytywania normalizerów: {e}")
             self.normalizers = {}

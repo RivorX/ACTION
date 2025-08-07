@@ -104,9 +104,10 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
     logger.info(f"Kategorie dni tygodnia w train.py: {df['Day_of_Week'].cat.categories.tolist()}")
     
     # Wczytaj normalizery
-    with open(config['data']['normalizers_path'], 'rb') as f:
+    normalizers_path = Path(config['paths']['models_dir']) / 'normalizers' / f"{config['model_name']}_normalizers.pkl"
+    with open(normalizers_path, 'rb') as f:
         normalizers = pickle.load(f)
-    logger.info(f"Wczytano normalizery z: {config['data']['normalizers_path']}")
+    logger.info(f"Wczytano normalizery z: {normalizers_path}")
     
     # Transformacja logarytmiczna
     log_features = [

@@ -8,6 +8,12 @@ import pickle
 import logging
 from pathlib import Path
 
+import sys
+import os
+# Dodaj katalog główny do ścieżek systemowych
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+from scripts.config_manager import ConfigManager 
+
 # Konfiguracja logowania
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -150,60 +156,40 @@ class FeatureEngineer:
             group['Tenkan_sen'], group['Kijun_sen'], group['Senkou_Span_A'], group['Senkou_Span_B'] = self.calculate_ichimoku(group)
             group['ROC'] = self.calculate_roc(group['Close'])
             group['VWAP'] = self.calculate_vwap(group)
+
+            # Dodatkowe cechy
             group['Momentum_20d'] = group['Close'] - group['Close'].shift(20)
-            group['Close_to_MA_ratio'] = group['Close'] / ((group['MA10'] + group['MA50']) / 2)
-
-            # Targety
-            group['Relative_Returns'] = group['Close'].pct_change().shift(-1)
-            group['Log_Returns'] = np.log(group['Close'] / group['Close'].shift(1)).shift(-1)
+            group['Close_to_MA_ratio'] = group['Close'] / group['MA50']
+            group['Relative_Returns'] = group['Close'].pct_change()
+            group['Log_Returns'] = np.log1p(group['Relative_Returns'])
             group['Future_Volume'] = group['Volume'].shift(-1)
-            group['Future_Volatility'] = group['Close'].rolling(window=20).std().shift(-1)
+            group['Future_Volatility'] = group['Relative_Returns'].rolling(window=5).std().shift(-1)
 
-            # Cechy kategoryczne
-            group['Day_of_Week'] = group['Date'].dt.dayofweek.astype(str)
             group['Month'] = group['Date'].dt.month.astype(str)
-            # Wypełnianie NaN w Day_of_Week i Month przed przekształceniem na typ kategoryczny
-            if group['Day_of_Week'].isna().any():
-                logger.warning(f"Znaleziono {group['Day_of_Week'].isna().sum()} NaN w Day_of_Week dla tickera {group['Ticker'].iloc[0]}, wypełniam wartością '0'")
-                group['Day_of_Week'] = group['Day_of_Week'].fillna('0')
-            if group['Month'].isna().any():
-                logger.warning(f"Znaleziono {group['Month'].isna().sum()} NaN w Month dla tickera {group['Ticker'].iloc[0]}, wypełniam wartością '1'")
-                group['Month'] = group['Month'].fillna('1')
+            group['Day_of_Week'] = group['Date'].dt.dayofweek.astype(str)
 
-            # Przekształcenie na typ kategoryczny
-            group['Day_of_Week'] = pd.Categorical(group['Day_of_Week'], categories=[str(i) for i in range(7)], ordered=False)
-            group['Month'] = pd.Categorical(group['Month'], categories=[str(i) for i in range(1, 13)], ordered=False)
-
-            # Wypełnianie NaN dla targetów
-            for col in ['Relative_Returns', 'Log_Returns', 'Future_Volume', 'Future_Volatility']:
-                group[col] = group[col].fillna(0)
-
-            # Wypełnianie NaN dla cech technicznych
-            technical_features = [
+            # Wypełnianie brakujących wartości dla Relative_Returns
+            nan_count = group['Relative_Returns'].isna().sum()
+            if nan_count > 0:
+                group['Relative_Returns'] = group['Relative_Returns'].fillna(0)
+            
+            # Wypełnianie brakujących wartości dla innych cech
+            features_to_fill = [
                 'MA10', 'MA50', 'BB_upper', 'BB_lower', 'BB_width', 'Close_to_BB_upper', 'Close_to_BB_lower',
-                'RSI', 'MACD', 'MACD_Signal', 'MACD_Histogram', 'Stochastic_K', 'Stochastic_D', 'TR', 'ATR', 'OBV',
-                'ADX', 'CCI', 'Tenkan_sen', 'Kijun_sen', 'Senkou_Span_A', 'Senkou_Span_B', 'ROC', 'VWAP',
-                'Momentum_20d', 'Close_to_MA_ratio'
+                'RSI', 'MACD', 'MACD_Signal', 'MACD_Histogram', 'Stochastic_K', 'Stochastic_D', 'TR', 'ATR',
+                'OBV', 'ADX', 'CCI', 'Tenkan_sen', 'Kijun_sen', 'Senkou_Span_A', 'Senkou_Span_B', 'ROC',
+                'Momentum_20d', 'Close_to_MA_ratio', 'Log_Returns', 'Future_Volume', 'Future_Volatility'
             ]
-            for col in technical_features:
-                if col in group.columns:
-                    if group[col].isna().all():
-                        logger.warning(f"Kolumna {col} zawiera tylko NaN dla {group['Ticker'].iloc[0]}, wypełniam zerami")
-                        group[col] = group[col].fillna(0)
-                    else:
-                        group[col] = group[col].ffill().bfill()
-                        if group[col].isna().any():
-                            logger.warning(f"Kolumna {col} nadal zawiera NaN po ffill/bfill, wypełniam średnią")
-                            group[col] = group[col].fillna(group[col].mean())
+            for feature in features_to_fill:
+                if feature in group.columns and group[feature].isna().any():
+                    nan_count = group[feature].isna().sum()
+                    group[feature] = group[feature].ffill().bfill()
 
             return group
 
+        # Grupowanie po Ticker i stosowanie cech
         df = df.groupby('Ticker').apply(apply_features).reset_index(drop=True)
-
-        # Usuwamy tylko wiersze z brakami w kluczowych danych
-        required_cols = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 'Ticker', 'Sector']
-        df = df.dropna(subset=required_cols)
-        logger.info(f"Długość danych po dropna kluczowych kolumn: {len(df)}")
+        df = df.dropna(subset=['Close', 'Open', 'High', 'Low', 'Volume'])
 
         # Upewnij się, że Sector jest kategoryczny
         df['Sector'] = pd.Categorical(df['Sector'], categories=ALL_SECTORS, ordered=False)
@@ -211,7 +197,7 @@ class FeatureEngineer:
 
         # Logowanie brakujących danych w innych kolumnach
         for col in df.columns:
-            if col not in required_cols and df[col].isna().any():
+            if col not in ['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 'Ticker', 'Sector'] and df[col].isna().any():
                 logger.warning(f"Kolumna {col} zawiera wartości NaN dla tickera {df['Ticker'].iloc[0] if 'Ticker' in df else 'nieznany'} (liczba NaN: {df[col].isna().sum()})")
 
         return df
@@ -222,9 +208,10 @@ class DataPreprocessor:
     def __init__(self, config: dict):
         self.config = config
         self.feature_engineer = FeatureEngineer()
-        self.normalizers_path = Path(config['data']['normalizers_path'])
+        self.model_name = config['model_name']
         self.processed_data_path = Path(config['data']['processed_data_path'])
         self.day_of_week_categories = [str(i) for i in range(7)]
+        self.config_manager = ConfigManager()  # Dodano ConfigManager
 
     def preprocess_data(self, df: pd.DataFrame) -> TimeSeriesDataSet:
         if df.empty:
@@ -261,44 +248,78 @@ class DataPreprocessor:
             if feature in df.columns:
                 df[feature] = np.log1p(df[feature].clip(lower=0))
 
+        # Inicjalizacja listy valid_numeric_features
         valid_numeric_features = []
-        normalizers = {}
-        for feature in numeric_features:
-            if feature in df.columns:
-                has_nan = df[feature].isna().any()
-                has_inf = np.isinf(df[feature]).any()
-                unique_count = df[feature].nunique()
-                
-                if has_nan or has_inf:
-                    logger.warning(f"Cecha {feature} zawiera NaN ({has_nan}) lub inf ({has_inf}), pomijam w time_varying_known_reals")
-                elif unique_count <= 1:
-                    logger.warning(f"Cecha {feature} ma tylko {unique_count} unikalnych wartości, może powodować problemy z normalizacją")
-                    valid_numeric_features.append(feature)
-                else:
+
+        # Sprawdź, czy normalizery już istnieją
+        normalizers = self.config_manager.load_normalizers(self.model_name)
+        if normalizers:
+            logger.info(f"Normalizery już istnieją dla modelu: {self.model_name}. Pomijam tworzenie nowych normalizerów.")
+            # Utwórz listę valid_numeric_features na podstawie dostępnych normalizerów i kolumn w df
+            for feature in numeric_features:
+                if feature in df.columns and feature in normalizers:
                     try:
-                        normalizer = TorchNormalizer()
-                        values = df[feature].values
-                        df[feature] = normalizer.fit_transform(values)
-                        normalizers[feature] = normalizer
-                        
+                        df[feature] = normalizers[feature].transform(df[feature].values)
                         if df[feature].isna().any() or np.isinf(df[feature]).any():
-                            logger.error(f"Normalizacja cechy {feature} spowodowała NaN lub inf, usuwam tę cechę")
-                            del normalizers[feature]
+                            logger.error(f"Transformacja cechy {feature} spowodowała NaN lub inf")
+                        else:
+                            valid_numeric_features.append(feature)
+                    except Exception as e:
+                        logger.error(f"Błąd podczas transformacji cechy {feature}: {e}")
+                elif feature in df.columns:
+                    logger.warning(f"Cecha {feature} nie znajduje się w normalizerach, pomijam")
+        else:
+            logger.info(f"Tworzenie nowych normalizerów i zapis dla modelu: {self.model_name}")
+            normalizers = {}
+            for feature in numeric_features:
+                if feature in df.columns:
+                    has_nan = df[feature].isna().any()
+                    has_inf = np.isinf(df[feature]).any()
+                    unique_count = df[feature].nunique()
+                    
+                    if has_nan or has_inf:
+                        logger.warning(f"Cecha {feature} zawiera NaN ({has_nan}) lub inf ({has_inf}), pomijam w time_varying_known_reals")
+                    elif unique_count <= 1:
+                        logger.warning(f"Cecha {feature} ma tylko {unique_count} unikalnych wartości, może powodować problemy z normalizacją")
+                        valid_numeric_features.append(feature)
+                    else:
+                        try:
+                            normalizer = TorchNormalizer()
+                            values = df[feature].values
+                            df[feature] = normalizer.fit_transform(values)
+                            normalizers[feature] = normalizer
+                            
+                            if df[feature].isna().any() or np.isinf(df[feature]).any():
+                                logger.error(f"Normalizacja cechy {feature} spowodowała NaN lub inf, usuwam tę cechę")
+                                del normalizers[feature]
+                                if feature in valid_numeric_features:
+                                    valid_numeric_features.remove(feature)
+                            else:
+                                logger.info(f"Normalizacja cechy {feature} zakończona pomyślnie: min={df[feature].min():.6f}, max={df[feature].max():.6f}")
+                                valid_numeric_features.append(feature)
+                            
+                        except Exception as e:
+                            logger.error(f"Błąd podczas normalizacji cechy {feature}: {e}")
                             if feature in valid_numeric_features:
                                 valid_numeric_features.remove(feature)
-                        else:
-                            logger.info(f"Normalizacja cechy {feature} zakończona pomyślnie: min={df[feature].min():.6f}, max={df[feature].max():.6f}")
-                            
-                    except Exception as e:
-                        logger.error(f"Błąd podczas normalizacji cechy {feature}: {e}")
-                        if feature in valid_numeric_features:
-                            valid_numeric_features.remove(feature)
-                if feature not in valid_numeric_features:
-                    valid_numeric_features.append(feature)
+                else:
+                    logger.warning(f"Cecha {feature} nie znajduje się w danych, pomijam")
+            
+            # Zapisz normalizery tylko, jeśli nie istnieją
+            self.config_manager.save_normalizers(self.model_name, normalizers)
+            logger.info(f"Normalizery zapisane dla modelu: {self.model_name}")
 
-        with open(self.normalizers_path, 'wb') as f:
-            pickle.dump(normalizers, f)
-        logger.info(f"Normalizery zapisane do: {self.normalizers_path}")
+        # Zastosuj istniejące lub nowo utworzone normalizery
+        for feature in numeric_features:
+            if feature in df.columns and feature in normalizers and feature not in valid_numeric_features:
+                try:
+                    df[feature] = normalizers[feature].transform(df[feature].values)
+                    if df[feature].isna().any() or np.isinf(df[feature]).any():
+                        logger.error(f"Transformacja cechy {feature} spowodowała NaN lub inf")
+                    else:
+                        valid_numeric_features.append(feature)
+                except Exception as e:
+                    logger.error(f"Błąd podczas transformacji cechy {feature}: {e}")
 
         targets = ["Relative_Returns", "Future_Volume", "Future_Volatility"]
         
@@ -307,7 +328,6 @@ class DataPreprocessor:
         
         logger.info(f"Kategorie dla Day_of_Week: {self.day_of_week_categories}")
         logger.info(f"Kategorie dla Sector: {ALL_SECTORS}")
-
         logger.info(f"Finalna lista cech numerycznych ({len(valid_numeric_features)}): {valid_numeric_features}")
         logger.info(f"Finalna lista cech kategorycznych ({len(valid_categorical_features)}): {valid_categorical_features}")
 
