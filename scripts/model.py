@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import sys
 import os
+import time
 # Dodaj katalog główny do ścieżek systemowych
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 from scripts.config_manager import ConfigManager 
@@ -32,6 +33,13 @@ def move_to_device(obj: Any, device: torch.device) -> Any:
     elif isinstance(obj, (list, tuple)):
         return type(obj)(move_to_device(item, device) for item in obj)
     return obj
+
+def sanitize_tensor(tensor: torch.Tensor, fill_value: float = 0.0) -> torch.Tensor:
+    """Usuwa NaN i Inf z tensora, zastępując je fill_value."""
+    if torch.isnan(tensor).any() or torch.isinf(tensor).any():
+        logger.warning("Wykryto NaN lub Inf w tensorze, zastępuję wartościami 0.0")
+        return torch.nan_to_num(tensor, nan=fill_value, posinf=fill_value, neginf=fill_value)
+    return tensor
 
 class ModelConfig:
     """Klasa zarządzająca konfiguracją modelu."""
@@ -151,51 +159,65 @@ class CustomTemporalFusionTransformer(LightningModule):
     def forward(self, x: Dict[str, torch.Tensor]) -> torch.Tensor:
         x = move_to_device(x, self.device)
         output = self.model(x)
-        # Jeśli to tuple/lista, zwróć pierwszy element (predykcje)
         if isinstance(output, (tuple, list)):
             return output[0]
         return output
 
     def predict(self, data, **kwargs):
-        """Deleguje predykcję do wewnętrznego modelu."""
-        predictions = self.model.predict(data, **kwargs)
+        """Deleguje predykcję do wewnętrznego modelu z optymalizacją transferu na GPU."""
+        start_time = time.time()
+        device = self.device
+        logger.info(f"Uruchamianie predykcji na urządzeniu: {device}")
+        
+        self.eval()
+        with torch.inference_mode(), torch.amp.autocast(device_type='cuda' if torch.cuda.is_available() else 'cpu', dtype=torch.float32):
+            if hasattr(data, '__iter__') and hasattr(data, 'dataset'):
+                class GPUDataLoader:
+                    def __init__(self, original_loader, target_device):
+                        self.original_loader = original_loader
+                        self.target_device = target_device
+                        self.dataset = original_loader.dataset
+                        self.batch_size = original_loader.batch_size
+                    
+                    def __iter__(self):
+                        for batch in self.original_loader:
+                            batch_gpu = move_to_device(batch, self.target_device)
+                            yield batch_gpu
+                    
+                    def __len__(self):
+                        return len(self.original_loader)
+                
+                gpu_dataloader = GPUDataLoader(data, device)
+                predictions = self.model.predict(gpu_dataloader, **kwargs)
+            else:
+                data_gpu = move_to_device(data, device)
+                predictions = self.model.predict(data_gpu, **kwargs)
+        
+        prediction_duration = time.time() - start_time
         logger.info(f"Kształt zwracanych predykcji: {predictions.output.shape}")
+        logger.info(f"Czas predykcji w metodzie predict: {prediction_duration:.3f} sekundy")
         return predictions
 
     def interpret_output(self, x: Dict[str, torch.Tensor], **kwargs) -> Dict[str, Any]:
         """Deleguje interpretację wyjścia do wewnętrznego modelu TFT."""
         x = move_to_device(x, self.device)
-        
-        # Najpierw sprawdź, czy model ma wszystkie wymagane komponenty
         try:
-            # Wywołaj model w trybie interpretacji - to zwraca pełne dane
             self.model.eval()
             with torch.no_grad():
-                # Wywołaj model bezpośrednio, aby uzyskać pełne dane wyjściowe
                 full_output = self.model(x)
-                
-                # Sprawdź, czy full_output ma wymagane klucze
                 if isinstance(full_output, dict):
                     logger.info(f"Model zwrócił następujące klucze: {list(full_output.keys())}")
                     return self.model.interpret_output(full_output, **kwargs)
                 else:
-                    # Jeśli model zwraca tensor, musimy go przekonwertować na format słownikowy
                     logger.info("Model zwrócił tensor, konwertuję na format słownikowy")
-                    
-                    # Przygotuj pełne dane wyjściowe poprzez wywołanie _forward_full
                     if hasattr(self.model, '_forward_full'):
                         full_output = self.model._forward_full(x)
                     else:
-                        # Wywołaj model bezpośrednio w trybie pełnym
                         full_output = self.model.forward(x)
-                    
                     return self.model.interpret_output(full_output, **kwargs)
-                    
         except Exception as e:
             logger.error(f"Błąd w interpret_output: {e}")
-            # Spróbuj alternatywnego podejścia
             try:
-                # Wywołaj model w trybie treningowym, aby uzyskać pełne dane
                 self.model.train()
                 full_output = self.model(x)
                 self.model.eval()
@@ -203,126 +225,6 @@ class CustomTemporalFusionTransformer(LightningModule):
             except Exception as e2:
                 logger.error(f"Alternatywna metoda również nie działa: {e2}")
                 raise e
-
-    def _shared_step(self, batch: Tuple[Dict[str, torch.Tensor], List[torch.Tensor]], batch_idx: int, stage: str) -> torch.Tensor:
-        x, y = batch
-        x = move_to_device(x, self.device)
-        y_target = move_to_device(y[0], self.device)
-        
-        if stage == 'train' and not y_target.requires_grad:
-            y_target.requires_grad_(True)
-        
-        if torch.isnan(y_target).any() or torch.isinf(y_target).any():
-            logger.warning(f"NaN/Inf w y_target w batch {batch_idx}")
-            y_target = torch.nan_to_num(y_target, nan=0.0, posinf=0.0, neginf=0.0)
-        
-        try:
-            with torch.amp.autocast(device_type='cuda' if torch.cuda.is_available() else 'cpu', dtype=torch.bfloat16):
-                y_hat = self(x)
-                
-                if torch.isnan(y_hat).any() or torch.isinf(y_hat).any():
-                    logger.warning(f"NaN/Inf w y_hat w batch {batch_idx}")
-                    y_hat = torch.nan_to_num(y_hat, nan=0.0, posinf=0.0, neginf=0.0)
-                
-                # Obliczanie straty
-                loss = self.model.loss(y_hat, y_target)
-                
-                # Obliczanie dodatkowych metryk tylko dla walidacji
-                if stage == 'val':
-                    # Wybierz medianę dla metryk (indeks 1 dla kwantyli [0.1, 0.5, 0.9])
-                    y_hat_median = y_hat[:, :, 1] if y_hat.dim() == 3 else y_hat
-                    
-                    # MAPE
-                    mape = torch.mean(torch.abs((y_target - y_hat_median) / (y_target + 1e-10))) * 100
-                    self.log(f"{stage}_mape", mape, on_step=False, on_epoch=True, prog_bar=True, batch_size=x['encoder_cont'].size(0))
-                    
-                    # Directional Accuracy
-                    direction_pred = torch.sign(y_hat_median)
-                    direction_true = torch.sign(y_target)
-                    directional_accuracy = (direction_pred == direction_true).float().mean() * 100
-                    self.log(f"{stage}_directional_accuracy", directional_accuracy, on_step=False, on_epoch=True, prog_bar=True, batch_size=x['encoder_cont'].size(0))
-                
-                if not torch.isfinite(loss):
-                    logger.warning(f"Loss nie jest skończony w batch {batch_idx}: {loss}")
-                    loss = torch.tensor(1e-6, device=self.device, requires_grad=True)
-                
-        except Exception as e:
-            logger.error(f"Błąd podczas forward pass w batch {batch_idx}: {e}")
-            loss = torch.tensor(1e-6, device=self.device, requires_grad=True)
-            y_hat = torch.zeros_like(y_target, requires_grad=True)
-        
-        batch_size = x['encoder_cont'].size(0)
-        self.log(f"{stage}_loss", loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=batch_size)
-        
-        try:
-            l2_norm = sum(p.pow(2).sum() for p in self.parameters() if p.requires_grad).sqrt().item()
-            self.log(f"{stage}_l2_norm", l2_norm, on_step=True, on_epoch=True, prog_bar=False, batch_size=batch_size)
-        except Exception as e:
-            logger.warning(f"Nie można obliczyć l2_norm: {e}")
-        
-        if stage == 'val' and batch_idx % 50 == 0:
-            try:
-                self._log_validation_details(x, y_hat, y_target, batch_idx)
-            except Exception as e:
-                logger.error(f"Błąd w logowaniu szczegółów walidacji: {e}")
-        
-        return loss
-
-    def _log_validation_details(self, x, y_hat, y_target, batch_idx):
-        """Wydzielona funkcja do logowania szczegółów walidacji."""
-        # Denormalizacja y_hat i y_target (Relative Returns)
-        relative_returns_normalizer = self.normalizers.get('Relative_Returns') or self.dataset.target_normalizer
-        if relative_returns_normalizer:
-            try:
-                # Przeniesienie na CPU i konwersja na float32 przed denormalizacją
-                y_hat_denorm = relative_returns_normalizer.inverse_transform(y_hat.float().cpu())
-                y_target_denorm = relative_returns_normalizer.inverse_transform(y_target.float().cpu())
-                
-                # KONWERSJA RELATIVE RETURNS NA RZECZYWISTE CENY
-                if 'encoder_cont' in x:
-                    encoder_cont = x['encoder_cont'][0].cpu()  # Pierwszy przykład z batcha
-                    close_normalizer = self.normalizers.get('Close')
-                    if close_normalizer is not None:
-                        try:
-                            # Znajdź pozycję Close w numeric_features
-                            numeric_features = [
-                                "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI", "Volatility",
-                                "MACD", "MACD_Signal", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
-                                "Close_momentum_1d", "Close_momentum_5d", "Close_vs_MA10", "Close_vs_MA50",
-                                "Close_percentile_20d", "Close_volatility_5d", "Close_RSI_divergence"
-                            ]
-                            close_idx = numeric_features.index("Close") if "Close" in numeric_features else None
-                            
-                            if close_idx is not None:
-                                # Pobierz ostatnią wartość Close z encodera
-                                last_close_norm = encoder_cont[-1, close_idx]
-                                last_close_denorm = close_normalizer.inverse_transform(torch.tensor([[last_close_norm]]))
-                                last_close_price = np.expm1(last_close_denorm.numpy())[0, 0]
-                                
-                                # Sprawdź rozsądność ceny
-                                if last_close_price > 10000:
-                                    logger.warning(f"Bardzo wysoka cena Close: {last_close_price:.2f}")
-                                    last_close_price_alt = last_close_denorm.numpy()[0, 0]
-                                    if 10 <= last_close_price_alt <= 1000:
-                                        last_close_price = last_close_price_alt
-                                
-                                logger.info(f"Ostatnia cena Close z batcha: {last_close_price:.2f}")
-                                
-                                # Konwertuj tylko pierwsze 5 predykcji dla czytelności
-                                self._convert_to_prices(y_hat_denorm, y_target_denorm, last_close_price, batch_idx)
-                            else:
-                                logger.warning("Nie można znaleźć indeksu kolumny Close")
-                        except Exception as e:
-                            logger.error(f"Błąd podczas konwersji na rzeczywiste ceny: {e}")
-                    else:
-                        logger.warning("Brak normalizera dla Close")
-                else:
-                    logger.warning("Brak danych encoder_cont w batchu")
-                    
-            except Exception as e:
-                logger.error(f"Błąd podczas denormalizacji Relative Returns: {e}")
-        else:
-            logger.warning("Brak normalizera dla 'Relative_Returns'")
 
     def _convert_to_prices(self, y_hat_denorm, y_target_denorm, last_close_price, batch_idx):
         def to_scalar(tensor_val):
@@ -340,18 +242,16 @@ class CustomTemporalFusionTransformer(LightningModule):
         current_price_target = last_close_price
         
         for i in range(min(5, y_hat_denorm.shape[1])):
-            # Dla predykcji (quantiles)
-            if y_hat_denorm.dim() == 3:  # Sprawdź, czy tensor ma 3 wymiary
-                relative_return_pred = to_scalar(y_hat_denorm[0, i, 1])  # mediana
-                relative_return_pred_lower = to_scalar(y_hat_denorm[0, i, 0])  # dolny
-                relative_return_pred_upper = to_scalar(y_hat_denorm[0, i, 2])  # górny
+            if y_hat_denorm.dim() == 3:
+                relative_return_pred = to_scalar(y_hat_denorm[0, i, 1])
+                relative_return_pred_lower = to_scalar(y_hat_denorm[0, i, 0])
+                relative_return_pred_upper = to_scalar(y_hat_denorm[0, i, 2])
             else:
                 logger.warning(f"y_hat_denorm ma nieoczekiwany kształt: {y_hat_denorm.shape}")
                 relative_return_pred = to_scalar(y_hat_denorm[0, i])
                 relative_return_pred_lower = relative_return_pred
                 relative_return_pred_upper = relative_return_pred
             
-            # Oblicz ceny
             next_price_pred = current_price_pred * (1 + relative_return_pred)
             next_price_pred_lower = current_price_pred * (1 + relative_return_pred_lower)
             next_price_pred_upper = current_price_pred * (1 + relative_return_pred_upper)
@@ -363,13 +263,11 @@ class CustomTemporalFusionTransformer(LightningModule):
             })
             current_price_pred = next_price_pred
             
-            # Dla wartości rzeczywistych
             relative_return_target = to_scalar(y_target_denorm[0, i])
             next_price_target = current_price_target * (1 + relative_return_target)
             y_target_prices.append(next_price_target)
             current_price_target = next_price_target
         
-        # Formatowanie wyników
         pred_medians = [f"{p['median']:.2f}" for p in y_hat_prices]
         pred_lowers = [f"{p['lower']:.2f}" for p in y_hat_prices]
         pred_uppers = [f"{p['upper']:.2f}" for p in y_hat_prices]
@@ -391,14 +289,12 @@ class CustomTemporalFusionTransformer(LightningModule):
 
     def on_validation_epoch_end(self) -> None:
         """Loguje val_l2_norm i learning_rate na końcu każdej epoki walidacyjnej."""
-        # Pobierz średnią val_l2_norm z epoki
         val_l2_norm = self.trainer.callback_metrics.get("val_l2_norm", None)
         if val_l2_norm is not None:
             logger.info(f"Validation epoch end: val_l2_norm = {val_l2_norm:.4f}")
         else:
             logger.warning("val_l2_norm nie jest dostępne w callback_metrics")
 
-        # Pobierz aktualny learning rate z optymalizatora
         optimizer = self.optimizers()
         if optimizer is not None:
             current_lr = optimizer.param_groups[0]['lr']
