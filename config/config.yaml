@@ -1,29 +1,58 @@
-# Konfiguracja modelu
-# Ten plik zawiera ustawienia dla modelu Temporal Fusion Transformer
+# Konfiguracja modelu Temporal Fusion Transformer
+# Zawiera wszystkie ustawienia dla modelu, treningu, predykcji, danych i walidacji
 
 # Nazwa modelu
-model_name: Gen4_3
+model_name: Gen4_3x
 
 # Ustawienia modelu
 model:
-  max_prediction_length: 90  # Maksymalna długość predykcji (dni)
-  min_encoder_length: 50     # Minimalna długość danych wejściowych
-  max_encoder_length: 180    # Maksymalna długość danych historycznych
-  hidden_size: 128           # Rozmiar warstwy ukrytej
-  attention_head_size: 4     # Liczba głowic uwagi
-  dropout: 0.3               # Współczynnik dropout dla stabilności
-  learning_rate: 0.001       # Współczynnik uczenia
-  lstm_layers: 2             # Liczba warstw LSTM
-  loss: QuantileLoss         # Funkcja straty
-  use_quantile_loss: true    # Włączenie straty kwantylowej
-  quantiles: [0.1, 0.5, 0.9] # Kwantyle dla predykcji
-  # Zakresy hiperparametrów dla Optuna
-  min_hidden_size: 64
-  max_hidden_size: 128
-  min_lstm_layers: 1
-  max_lstm_layers: 2
-  min_attention_head_size: 2
-  max_attention_head_size: 4
+  # Parametry architektury modelu
+  max_prediction_length: 90       # Maksymalna długość predykcji (dni)
+  min_encoder_length: 50          # Minimalna długość danych wejściowych
+  max_encoder_length: 180         # Maksymalna długość danych historycznych
+  hidden_size: 128                # Rozmiar warstwy ukrytej
+  attention_head_size: 4          # Liczba głowic uwagi
+  dropout: 0.3                    # Współczynnik dropout
+  learning_rate: 0.001            # Współczynnik uczenia
+  lstm_layers: 2                  # Liczba warstw LSTM
+  use_quantile_loss: true         # Włączenie straty kwantylowej
+  quantiles: [0.1, 0.5, 0.9]      # Kwantyle dla predykcji
+
+  # Rozmiary embeddingów dla zmiennych kategorycznych
+  embedding_sizes:
+    Sector: [12, 6]
+    Day_of_Week: [7, 4]
+    Month: [12, 6]
+
+  # Lista sektorów
+  sectors:
+    - Technology
+    - Healthcare
+    - Financials
+    - Consumer Discretionary
+    - Consumer Staples
+    - Energy
+    - Utilities
+    - Industrials
+    - Materials
+    - Communication Services
+    - Real Estate
+    - Unknown
+
+  # Parametry dla optymalizacji hiperparametrów (Optuna)
+  tuning:
+    min_hidden_size: 64            # Minimalny rozmiar warstwy ukrytej
+    max_hidden_size: 128           # Maksymalny rozmiar warstwy ukrytej
+    min_hidden_continuous_size: 64  # Minimalny rozmiar warstwy ukrytej dla danych ciągłych
+    max_hidden_continuous_size: 128 # Maksymalny rozmiar warstwy ukrytej dla danych ciągłych
+    min_lstm_layers: 1             # Minimalna liczba warstw LSTM
+    max_lstm_layers: 2             # Maksymalna liczba warstw LSTM
+    min_attention_head_size: 2     # Minimalna liczba głowic uwagi
+    max_attention_head_size: 4     # Maksymalna liczba głowic uwagi
+    min_dropout: 0.1               # Minimalny współczynnik dropout
+    max_dropout: 0.3               # Maksymalny współczynnik dropout
+    min_learning_rate: 1e-5        # Minimalny współczynnik uczenia
+    max_learning_rate: 1e-3        # Maksymalny współczynnik uczenia
 
 # Ustawienia treningu
 training:
@@ -33,14 +62,21 @@ training:
   optuna_trials: 5              # Liczba prób dla optymalizacji hiperparametrów
   reduce_lr_patience: 3         # Cierpliwość dla redukcji współczynnika uczenia
   reduce_lr_factor: 0.6         # Czynnik redukcji współczynnika uczenia
+  weight_decay: 0.1             # Współczynnik decay dla wag
 
 # Ustawienia predykcji
 prediction:
   years: 3                      # Liczba lat historycznych do pobierania danych
-  batch_size: 128               # Rozmiar partii dla predykcji
+  batch_size: 256               # Rozmiar partii dla predykcji
+
+# Ustawienia walidacji
+validation:
+  enable_detailed_validation: false  # Czy włączyć szczegółowe logowanie walidacji
+  max_validation_batches_to_log: 3   # Maksymalna liczba batchy walidacyjnych do logowania
 
 # Ustawienia danych
 data:
+  valid_regions: ['poland', 'europe', 'usa', 'global', 'all']  # Lista dozwolonych regionów
   raw_data_path: data/stock_data.csv            # Ścieżka do surowych danych giełdowych
   processed_data_path: data/processed_dataset.pt # Ścieżka do przetworzonego datasetu
   tickers_file: config/tickers_with_names.yaml   # Plik z tickerami i nazwami spółek
@@ -48,4 +84,8 @@ data:
 
 # Ścieżki do zapisu
 paths:
+  data_dir: data                # Katalog główny dla danych
   models_dir: models             # Katalog do zapisu modeli
+  normalizers_dir: models/normalizers  # Katalog do zapisu normalizerów
+  config_dir: config             # Katalog do zapisu plików konfiguracyjnych
+  logs_dir: logs                # Katalog do zapisu logów

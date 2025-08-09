@@ -19,13 +19,6 @@ from pathlib import Path
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Lista wszystkich możliwych sektorów
-ALL_SECTORS = [
-    'Technology', 'Healthcare', 'Financials', 'Consumer Discretionary', 'Consumer Staples',
-    'Energy', 'Utilities', 'Industrials', 'Materials', 'Communication Services',
-    'Real Estate', 'Unknown'
-]
-
 class CustomModelCheckpoint(pl.callbacks.Callback):
     """Niestandardowy callback do zapisywania checkpointów."""
     
@@ -98,7 +91,7 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
     df['group_id'] = df['Ticker']
     
     # Upewnij się, że Sector i Day_of_Week są kategoryczne
-    df['Sector'] = pd.Categorical(df['Sector'], categories=ALL_SECTORS, ordered=False)
+    df['Sector'] = pd.Categorical(df['Sector'], categories=config['model']['sectors'], ordered=False)
     df['Day_of_Week'] = pd.Categorical(df['Day_of_Week'], categories=[str(i) for i in range(7)], ordered=False)
     logger.info(f"Kategorie sektorów w train.py: {df['Sector'].cat.categories.tolist()}")
     logger.info(f"Kategorie dni tygodnia w train.py: {df['Day_of_Week'].cat.categories.tolist()}")

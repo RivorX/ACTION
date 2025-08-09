@@ -13,13 +13,6 @@ from concurrent.futures import ThreadPoolExecutor
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Lista wszystkich możliwych sektorów, w tym Unknown
-ALL_SECTORS = [
-    'Technology', 'Healthcare', 'Financials', 'Consumer Discretionary', 'Consumer Staples',
-    'Energy', 'Utilities', 'Industrials', 'Materials', 'Communication Services',
-    'Real Estate', 'Unknown'
-]
-
 class DataFetcher:
     def __init__(self, config_manager: ConfigManager, years: int):
         """
@@ -109,9 +102,9 @@ class DataFetcher:
                                     'Close': 'Close', 'Volume': 'Volume'})
             df['Ticker'] = ticker
 
-            # Dodanie sektora z listy ALL_SECTORS
+            # Dodanie sektora z listy z konfiguracji
             sector = info.get('sector', 'Unknown')
-            if sector not in ALL_SECTORS:
+            if sector not in self.config['model']['sectors']:
                 sector = 'Unknown'
             df['Sector'] = sector
 
@@ -176,8 +169,8 @@ class DataFetcher:
 
         df = pd.concat(all_data, ignore_index=True) if all_data else pd.DataFrame()
         if not df.empty:
-            # Upewnij się, że kolumna Sector jest kategoryczna z pełnym zestawem kategorii
-            df['Sector'] = pd.Categorical(df['Sector'], categories=ALL_SECTORS, ordered=False)
+            # Upewnij się, że kolumna Sector jest kategoryczna z pełnym zestawem kategorii z konfiguracji
+            df['Sector'] = pd.Categorical(df['Sector'], categories=self.config['model']['sectors'], ordered=False)
             df.to_csv(self.raw_data_path, index=False)
             logger.info(f"Dane zapisane do {self.raw_data_path}")
         else:

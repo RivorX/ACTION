@@ -3,13 +3,10 @@ import logging
 from pathlib import Path
 import pickle
 
-# Konfiguracja logowania
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 class ConfigManager:
-    """Klasa do zarządzania konfiguracją z pliku YAML z wzorcem Singleton."""
-
     _instance = None
 
     def __new__(cls, config_path: str = "config/config.yaml"):
@@ -20,7 +17,6 @@ class ConfigManager:
         return cls._instance
 
     def _load_config(self) -> dict:
-        """Wczytuje konfigurację z pliku YAML."""
         try:
             with open(self.config_path, 'r') as f:
                 config = yaml.safe_load(f)
@@ -33,8 +29,7 @@ class ConfigManager:
             logger.error(f"Błąd parsowania pliku YAML: {e}")
             raise
 
-    def get(self, key: str, default=None):
-        """Pobiera wartość z konfiguracji według klucza."""
+    def get(self, key: str):
         keys = key.split('.')
         value = self.config
         try:
@@ -42,12 +37,11 @@ class ConfigManager:
                 value = value[k]
             return value
         except (KeyError, TypeError):
-            logger.warning(f"Klucz {key} nie znaleziony w konfiguracji, zwracam {default}")
-            return default
+            logger.error(f"Klucz {key} nie znaleziony w konfiguracji")
+            raise KeyError(f"Klucz {key} nie znaleziony w konfiguracji")
 
     def load_normalizers(self, model_name: str) -> dict:
-        """Ładuje normalizery z pliku dla podanego modelu."""
-        normalizers_path = Path("models/normalizers") / f"{model_name}_normalizers.pkl"
+        normalizers_path = Path(self.get('paths.normalizers_dir')) / f"{model_name}_normalizers.pkl"
         if normalizers_path.exists():
             try:
                 with open(normalizers_path, "rb") as f:
@@ -62,8 +56,7 @@ class ConfigManager:
             return {}
 
     def save_normalizers(self, model_name: str, normalizers: dict):
-        """Zapisuje normalizery do pliku dla podanego modelu, jeśli plik nie istnieje."""
-        normalizers_path = Path("models/normalizers") / f"{model_name}_normalizers.pkl"
+        normalizers_path = Path(self.get('paths.normalizers_dir')) / f"{model_name}_normalizers.pkl"
         normalizers_path.parent.mkdir(parents=True, exist_ok=True)
         if normalizers_path.exists():
             logger.warning(f"Normalizery dla modelu {model_name} już istnieją w {normalizers_path}. Nie zapisuję ponownie.")

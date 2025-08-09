@@ -19,13 +19,6 @@ from scripts.config_manager import ConfigManager
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Lista wszystkich możliwych sektorów
-ALL_SECTORS = [
-    'Technology', 'Healthcare', 'Financials', 'Consumer Discretionary', 'Consumer Staples',
-    'Energy', 'Utilities', 'Industrials', 'Materials', 'Communication Services',
-    'Real Estate', 'Unknown'
-]
-
 async def load_data_and_model_async(config, ticker, temp_raw_data_path, historical_mode=False, trim_days=0, years=3):
     """Asynchroniczna wersja load_data_and_model z optymalizacją i logowaniem czasu."""
     start_time = time.time()
@@ -150,7 +143,7 @@ def preprocess_data(config, ticker_data, ticker, normalizers, historical_mode=Fa
                                                categories=[str(i) for i in range(7)], 
                                                ordered=False)
     
-    ticker_data['Sector'] = pd.Categorical(ticker_data['Sector'], categories=ALL_SECTORS, ordered=False)
+    ticker_data['Sector'] = pd.Categorical(ticker_data['Sector'], categories=config['model']['sectors'], ordered=False)
     
     log_features = [
         "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "ATR", "BB_width",

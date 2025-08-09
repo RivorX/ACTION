@@ -18,13 +18,6 @@ from scripts.config_manager import ConfigManager
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Lista wszystkich możliwych sektorów
-ALL_SECTORS = [
-    'Technology', 'Healthcare', 'Financials', 'Consumer Discretionary', 'Consumer Staples',
-    'Energy', 'Utilities', 'Industrials', 'Materials', 'Communication Services',
-    'Real Estate', 'Unknown'
-]
-
 class FeatureEngineer:
     """Klasa do inżynierii cech dla danych giełdowych."""
     
@@ -124,7 +117,7 @@ class FeatureEngineer:
         z_scores = (df[column] - df[column].mean()) / df[column].std()
         return df[abs(z_scores) < threshold]
 
-    def add_features(self, df: pd.DataFrame) -> pd.DataFrame:
+    def add_features(self, df: pd.DataFrame, sectors_list=None) -> pd.DataFrame:
         """Dodaje nowe cechy do ramki danych z grupowaniem po Ticker."""
         df = df.copy()
         df['Date'] = pd.to_datetime(df['Date'], utc=True)
@@ -192,8 +185,9 @@ class FeatureEngineer:
         df = df.dropna(subset=['Close', 'Open', 'High', 'Low', 'Volume'])
 
         # Upewnij się, że Sector jest kategoryczny
-        df['Sector'] = pd.Categorical(df['Sector'], categories=ALL_SECTORS, ordered=False)
-        logger.info(f"Kategorie sektorów: {df['Sector'].cat.categories.tolist()}")
+        if sectors_list is not None:
+            df['Sector'] = pd.Categorical(df['Sector'], categories=sectors_list, ordered=False)
+            logger.info(f"Kategorie sektorów: {df['Sector'].cat.categories.tolist()}")
 
         # Logowanie brakujących danych w innych kolumnach
         for col in df.columns:
@@ -217,10 +211,26 @@ class DataPreprocessor:
         if df.empty:
             raise ValueError("Ramka danych jest pusta. Sprawdź dane wejściowe.")
 
-        df = self.feature_engineer.add_features(df)
+        sectors_list = self.config['model']['sectors']
+        df = self.feature_engineer.add_features(df, sectors_list=sectors_list)
         df = df.dropna(subset=['Close', 'Open', 'High', 'Low', 'Volume'])
         df = df[(df['Close'] > 0) & (df['High'] >= df['Low'])]
         df = self.feature_engineer.remove_outliers(df, 'Close')
+
+        # Wypełnianie NaN dla wszystkich cech numerycznych
+        numeric_features = [
+            "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI",
+            "MACD", "MACD_Signal", "MACD_Histogram", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
+            "ADX", "CCI", "Tenkan_sen", "Kijun_sen", "Senkou_Span_A", "Senkou_Span_B", "ROC", "VWAP",
+            "Momentum_20d", "Close_to_MA_ratio", "BB_width", "Close_to_BB_upper", "Close_to_BB_lower",
+            "Relative_Returns"
+        ]
+        for feature in numeric_features:
+            if feature in df.columns:
+                nan_count = df[feature].isna().sum()
+                if nan_count > 0:
+                    logger.warning(f"Wypełniam {nan_count} wartości NaN w kolumnie {feature} (metoda ffill/bfill)")
+                    df[feature] = df[feature].ffill().bfill().fillna(0)
 
         df['Date'] = pd.to_datetime(df['Date'], utc=True)
         df['time_idx'] = (df['Date'] - df['Date'].min()).dt.days.astype(int)
@@ -229,7 +239,7 @@ class DataPreprocessor:
         df['Day_of_Week'] = df['Date'].dt.dayofweek.astype(str)
         df['Day_of_Week'] = pd.Categorical(df['Day_of_Week'], categories=self.day_of_week_categories, ordered=False)
 
-        df['Sector'] = pd.Categorical(df['Sector'], categories=ALL_SECTORS, ordered=False)
+        df['Sector'] = pd.Categorical(df['Sector'], categories=sectors_list, ordered=False)
         logger.info(f"Kategorie sektorów w preprocess_data: {df['Sector'].cat.categories.tolist()}")
 
         numeric_features = [
@@ -298,6 +308,7 @@ class DataPreprocessor:
                                 logger.info(f"Normalizacja cechy {feature} zakończona pomyślnie: min={df[feature].min():.6f}, max={df[feature].max():.6f}")
                                 valid_numeric_features.append(feature)
                             
+
                         except Exception as e:
                             logger.error(f"Błąd podczas normalizacji cechy {feature}: {e}")
                             if feature in valid_numeric_features:
@@ -327,7 +338,7 @@ class DataPreprocessor:
         valid_categorical_features = [f for f in categorical_features if f in df.columns]
         
         logger.info(f"Kategorie dla Day_of_Week: {self.day_of_week_categories}")
-        logger.info(f"Kategorie dla Sector: {ALL_SECTORS}")
+        logger.info(f"Kategorie dla Sector: {self.config['model']['sectors']}")
         logger.info(f"Finalna lista cech numerycznych ({len(valid_numeric_features)}): {valid_numeric_features}")
         logger.info(f"Finalna lista cech kategorycznych ({len(valid_categorical_features)}): {valid_categorical_features}")
 
