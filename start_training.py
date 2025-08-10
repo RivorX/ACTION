@@ -3,7 +3,7 @@ import yaml
 import asyncio
 import logging
 from pathlib import Path
-import torch
+import torch  
 from scripts.data_fetcher import DataFetcher
 from scripts.preprocessor import DataPreprocessor
 from scripts.train import train_model
@@ -21,7 +21,7 @@ def create_directories():
         if not os.path.exists(directory):
             os.makedirs(directory)
 
-async def start_training(regions: str = 'global', years: int = 3, use_optuna: bool = False, continue_training: bool = True, use_transfer_learning: bool = False, old_model_filename: str = None):
+async def start_training(regions: str = 'global', years: int = 3, use_optuna: bool = False, continue_training: bool = True, use_transfer_learning: bool = False, old_model_filename: str = None, new_lr: float = None):
     """Uruchamia proces treningu modelu, w tym pobieranie danych, preprocessing, transfer wag i trening."""
     try:
         create_directories()
@@ -94,7 +94,7 @@ async def start_training(regions: str = 'global', years: int = 3, use_optuna: bo
         # Trening modelu
         logger.info("Trenowanie modelu...")
         config['paths']['model_save_path'] = str(Path(config['paths']['models_dir']) / f"{model_name}.pth")
-        final_model = train_model(dataset, config, use_optuna=use_optuna, continue_training=continue_training)
+        final_model = train_model(dataset, config, use_optuna=use_optuna, continue_training=continue_training, new_lr=new_lr)
         logger.info("Trening zakończony. Uruchom `streamlit run app.py`, aby użyć aplikacji.")
         return final_model
 
@@ -103,6 +103,21 @@ async def start_training(regions: str = 'global', years: int = 3, use_optuna: bo
         raise
 
 if __name__ == "__main__":
+    config_manager = ConfigManager()
+    config = config_manager.config
+    model_name = config['model_name']
+    model_path = Path(config['paths']['models_dir']) / f"{model_name}.pth"
+    
+    # Odczytaj aktualne lr (z configu lub checkpointu, jeśli istnieje)
+    current_lr = config['model']['learning_rate']
+    if model_path.exists():
+        try:
+            checkpoint = torch.load(model_path, map_location='cpu', weights_only=False)
+            current_lr = checkpoint['hyperparams']['learning_rate']
+            logger.info(f"Odczytano learning rate z checkpointu: {current_lr}")
+        except Exception as e:
+            logger.warning(f"Nie można odczytać learning rate z checkpointu: {e}. Używam domyślnego z configu: {current_lr}")
+
     # Pobieranie danych od użytkownika na początku
     regions = input(f"Wybierz region(y) ({', '.join(['poland', 'europe', 'usa', 'global', 'all'])}, oddziel przecinkami, np. poland,europe) [domyślnie: global]: ").lower() or 'global'
     
@@ -122,6 +137,18 @@ if __name__ == "__main__":
     continue_training_input = input("Kontynuować trening z checkpointu? (tak/nie) [domyślnie: tak]: ").lower() or 'tak'
     continue_training = continue_training_input != 'nie'
 
+    # Nowa logika: zapytaj o zmianę lr tylko przy kontynuacji treningu
+    custom_lr = None
+    if continue_training:
+        change_lr_input = input(f"Aktualne learning rate to {current_lr}, czy chcesz je zmienić? (tak/nie) [domyślnie: nie]: ").lower() or 'nie'
+        if change_lr_input == 'tak':
+            new_lr_str = input("Podaj nową wartość learning rate (np. 0.0001): ").strip()
+            try:
+                custom_lr = float(new_lr_str)
+                logger.info(f"Nowa wartość learning rate ustawiona na: {custom_lr}")
+            except ValueError:
+                logger.error("Nieprawidłowa wartość learning rate. Używam aktualnej.")
+
     use_transfer_learning = False
     old_model_filename = None
     if not continue_training:
@@ -133,5 +160,5 @@ if __name__ == "__main__":
                 logger.error("Nie podano nazwy pliku starego modelu.")
                 raise ValueError("Nazwa pliku starego modelu nie może być pusta.")
 
-    # Uruchomienie treningu
-    asyncio.run(start_training(regions, years, use_optuna, continue_training, use_transfer_learning, old_model_filename))
+    # Uruchomienie treningu z nowym parametrem custom_lr
+    asyncio.run(start_training(regions, years, use_optuna, continue_training, use_transfer_learning, old_model_filename, new_lr=custom_lr))

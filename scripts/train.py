@@ -72,7 +72,7 @@ def objective(trial, train_dataset: TimeSeriesDataSet, val_dataset: TimeSeriesDa
     ), val_dataloaders=val_dataloader)
     return trainer.callback_metrics["val_loss"].item()
 
-def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = True, continue_training: bool = False):
+def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = True, continue_training: bool = False, new_lr: float = None):
     logger.info("Rozpoczynanie treningu modelu...")
     
     # Pobierz dane z raw_data_path i odfiltruj tylko wybrane tickery
@@ -125,7 +125,7 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
         if feature in df.columns and feature in normalizers:
             try:
                 df[feature] = normalizers[feature].transform(df[feature].values)
-                if df[feature].isna().any() or np.isinf(df[feature].any()):
+                if df[feature].isna().any() or np.isinf(df[feature]).any():
                     logger.error(f"Transformacja cechy {feature} spowodowała NaN lub inf")
             except Exception as e:
                 logger.error(f"Błąd transformacji cechy {feature}: {e}")
@@ -138,6 +138,18 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
             nan_count = df[col].isna().sum()
             if nan_count > 0:
                 logger.warning(f"Cecha {col} ma {nan_count} wartości NaN po konwersji")
+    
+    # Nowe zabezpieczenie: Wypełnij NaN w cechach numerycznych (ffill/bfill w ramach grupy, potem średnią jeśli potrzeba)
+    for col in numeric_features:
+        if col in df.columns and df[col].isna().any():
+            nan_count = df[col].isna().sum()
+            logger.warning(f"Wypełniam {nan_count} NaN w cesze {col} metodą ffill/bfill w ramach grupy (tickera).")
+            df[col] = df.groupby('group_id')[col].transform(lambda x: x.fillna(method='ffill').fillna(method='bfill'))
+            # Jeśli nadal NaN (np. cała grupa NaN), wypełnij globalną średnią
+            if df[col].isna().any():
+                remaining_nan = df[col].isna().sum()
+                logger.warning(f"Wciąż {remaining_nan} NaN w {col} – wypełniam globalną średnią.")
+                df[col] = df[col].fillna(df[col].mean())
     
     categorical_columns = ['Day_of_Week', 'Month']
     for cat_col in categorical_columns:
@@ -207,6 +219,12 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
         logger.info(f"Wczytywanie modelu z {model_save_path}")
         checkpoint = torch.load(model_save_path, map_location=torch.device('cpu'), weights_only=False)
         hyperparams = checkpoint["hyperparams"]
+        
+        # Nowa logika: zmień lr jeśli podano
+        if new_lr is not None:
+            hyperparams['learning_rate'] = new_lr
+            logger.info(f"Zmieniono learning rate na {new_lr} dla kontynuacji treningu.")
+        
         final_model = build_model(dataset, config, hyperparams=hyperparams)
         try:
             final_model.load_state_dict(checkpoint["state_dict"])
