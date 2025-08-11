@@ -60,7 +60,7 @@ class FeatureImportanceAnalyzer:
             
             # Dynamiczne budowanie ścieżki do modelu na podstawie model_name i models_dir
             model_name = self.config['model_name']
-            checkpoint_path = Path(self.config['paths']['models_dir']) / f"{model_name}_checkpoint.pth"
+            checkpoint_path = Path(self.config['paths']['models_dir']) / f"{model_name}.pth"
             if not checkpoint_path.exists():
                 raise FileNotFoundError(f"Checkpoint nie istnieje: {checkpoint_path}")
                 

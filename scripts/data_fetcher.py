@@ -13,13 +13,6 @@ from concurrent.futures import ThreadPoolExecutor
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Lista wszystkich możliwych sektorów, w tym Unknown
-ALL_SECTORS = [
-    'Technology', 'Healthcare', 'Financials', 'Consumer Discretionary', 'Consumer Staples',
-    'Energy', 'Utilities', 'Industrials', 'Materials', 'Communication Services',
-    'Real Estate', 'Unknown'
-]
-
 class DataFetcher:
     def __init__(self, config_manager: ConfigManager, years: int):
         """
@@ -109,17 +102,15 @@ class DataFetcher:
                                     'Close': 'Close', 'Volume': 'Volume'})
             df['Ticker'] = ticker
 
-            # Dodanie sektora z listy ALL_SECTORS
+            # Dodanie sektora z listy z konfiguracji
             sector = info.get('sector', 'Unknown')
-            if sector not in ALL_SECTORS:
+            if sector not in self.config['model']['sectors']:
                 sector = 'Unknown'
             df['Sector'] = sector
-            logger.info(f"Przypisano sektor dla {ticker}: {sector}")
 
             # Logowanie liczby dni i sprawdzenie luk w danych
             expected_days = (end_date - adjusted_start_date).days * 0.6  # Minimum 60% dni handlowych
             actual_days = len(df)
-            logger.info(f"Liczba dni w danych dla {ticker}: {actual_days}, minimum oczekiwane: {expected_days}")
             if actual_days < expected_days:
                 logger.warning(f"Mała liczba dni dla {ticker}: {actual_days} dni, próbuję pobrać dłuższy zakres")
                 # Próba pobrania dłuższego zakresu danych
@@ -140,7 +131,6 @@ class DataFetcher:
 
             # Przycięcie danych do oryginalnego zakresu dat
             df = df[df['Date'] >= pd.Timestamp(start_date, tz='UTC')].reset_index(drop=True)
-            logger.info(f"Długość danych po przycięciu dla {ticker}: {len(df)}")
 
             # Filtruj wymagane kolumny
             required_cols = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 'Ticker', 'Sector']
@@ -179,8 +169,8 @@ class DataFetcher:
 
         df = pd.concat(all_data, ignore_index=True) if all_data else pd.DataFrame()
         if not df.empty:
-            # Upewnij się, że kolumna Sector jest kategoryczna z pełnym zestawem kategorii
-            df['Sector'] = pd.Categorical(df['Sector'], categories=ALL_SECTORS, ordered=False)
+            # Upewnij się, że kolumna Sector jest kategoryczna z pełnym zestawem kategorii z konfiguracji
+            df['Sector'] = pd.Categorical(df['Sector'], categories=self.config['model']['sectors'], ordered=False)
             df.to_csv(self.raw_data_path, index=False)
             logger.info(f"Dane zapisane do {self.raw_data_path}")
         else:
