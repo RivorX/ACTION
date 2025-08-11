@@ -4,6 +4,7 @@ import asyncio
 import logging
 from pathlib import Path
 import torch  
+import shutil  # Dodane dla kopiowania plików
 from scripts.data_fetcher import DataFetcher
 from scripts.preprocessor import DataPreprocessor
 from scripts.train import train_model
@@ -69,8 +70,18 @@ async def start_training(regions: str = 'global', years: int = 3, use_optuna: bo
         normalizers_path = Path(config['paths']['models_dir']) / 'normalizers' / f"{model_name}_normalizers.pkl"
         logger.info(f"Ścieżka normalizerów: {normalizers_path}")
 
+        # Jeśli transfer learning, skopiuj stare normalizery do nowej ścieżki
+        if use_transfer_learning and old_model_filename:
+            old_model_name = old_model_filename.replace('.pth', '')  # Wyciągnij nazwę modelu bez rozszerzenia
+            old_normalizers_path = Path(config['paths']['models_dir']) / 'normalizers' / f"{old_model_name}_normalizers.pkl"
+            if old_normalizers_path.exists():
+                shutil.copy(old_normalizers_path, normalizers_path)
+                logger.info(f"Skopiowano stare normalizery z {old_normalizers_path} do {normalizers_path} dla transfer learningu.")
+            else:
+                logger.warning(f"Stare normalizery {old_normalizers_path} nie istnieją – preprocessing stworzy nowe.")
+
         preprocessor = DataPreprocessor(config)
-        dataset = preprocessor.preprocess_data(df)
+        dataset = preprocessor.process_data(mode='train', df=df)
 
         # Transfer learning
         if use_transfer_learning and not continue_training:

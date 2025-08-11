@@ -111,7 +111,7 @@ def load_data_and_model(config, ticker, temp_raw_data_path, historical_mode=Fals
 def preprocess_data(config, ticker_data, ticker, normalizers, historical_mode=False, trim_days=0):
     """Preprocessuje dane używając wspólnej metody z DataPreprocessor."""
     preprocessor = DataPreprocessor(config)
-    ticker_data, original_close = preprocessor.prepare_prediction_data(ticker_data, normalizers, ticker, historical_mode, trim_days)
+    ticker_data, original_close = preprocessor.process_data(mode='predict', df=ticker_data, normalizers=normalizers, ticker=ticker, historical_mode=historical_mode, trim_days=trim_days)
     return ticker_data, original_close
 
 def generate_predictions(config, dataset, model, ticker_data):
