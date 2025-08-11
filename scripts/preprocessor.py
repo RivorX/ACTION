@@ -7,6 +7,7 @@ import torch
 import pickle
 import logging
 from pathlib import Path
+import time
 
 import sys
 import os
@@ -170,54 +171,35 @@ class FeatureEngineer:
             features_to_fill = [
                 'MA10', 'MA50', 'BB_upper', 'BB_lower', 'BB_width', 'Close_to_BB_upper', 'Close_to_BB_lower',
                 'RSI', 'MACD', 'MACD_Signal', 'MACD_Histogram', 'Stochastic_K', 'Stochastic_D', 'TR', 'ATR',
-                'OBV', 'ADX', 'CCI', 'Tenkan_sen', 'Kijun_sen', 'Senkou_Span_A', 'Senkou_Span_B', 'ROC',
+                'OBV', 'ADX', 'CCI', 'Tenkan_sen', 'Kijun_sen', 'Senkou_Span_A', 'Senkou_Span_B', 'ROC', 'VWAP',
                 'Momentum_20d', 'Close_to_MA_ratio', 'Log_Returns', 'Future_Volume', 'Future_Volatility'
             ]
             for feature in features_to_fill:
-                if feature in group.columns and group[feature].isna().any():
-                    nan_count = group[feature].isna().sum()
-                    group[feature] = group[feature].ffill().bfill()
+                if feature in group.columns:
+                    group[feature] = group[feature].ffill().bfill().fillna(0)
 
             return group
 
-        # Grupowanie po Ticker i stosowanie cech
         df = df.groupby('Ticker').apply(apply_features).reset_index(drop=True)
         df = df.dropna(subset=['Close', 'Open', 'High', 'Low', 'Volume'])
-
-        # Upewnij się, że Sector jest kategoryczny
-        if sectors_list is not None:
-            df['Sector'] = pd.Categorical(df['Sector'], categories=sectors_list, ordered=False)
-            logger.info(f"Kategorie sektorów: {df['Sector'].cat.categories.tolist()}")
-
-        # Logowanie brakujących danych w innych kolumnach
-        for col in df.columns:
-            if col not in ['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 'Ticker', 'Sector'] and df[col].isna().any():
-                logger.warning(f"Kolumna {col} zawiera wartości NaN dla tickera {df['Ticker'].iloc[0] if 'Ticker' in df else 'nieznany'} (liczba NaN: {df[col].isna().sum()})")
-
+        df = df[(df['Close'] > 0) & (df['High'] >= df['Low'])]
         return df
 
 class DataPreprocessor:
-    """Klasa odpowiedzialna za preprocessing danych giełdowych i tworzenie zbioru danych TimeSeriesDataSet."""
-    
     def __init__(self, config: dict):
         self.config = config
+        self.config_manager = ConfigManager()
         self.feature_engineer = FeatureEngineer()
         self.model_name = config['model_name']
         self.processed_data_path = Path(config['data']['processed_data_path'])
+        self.processed_df_path = Path(config['data']['processed_df_path'])  # Nowe: ścieżka do przetworzonego df
         self.day_of_week_categories = [str(i) for i in range(7)]
-        self.config_manager = ConfigManager()  # Dodano ConfigManager
 
     def preprocess_data(self, df: pd.DataFrame) -> TimeSeriesDataSet:
-        if df.empty:
-            raise ValueError("Ramka danych jest pusta. Sprawdź dane wejściowe.")
-
         sectors_list = self.config['model']['sectors']
-        df = self.feature_engineer.add_features(df, sectors_list=sectors_list)
-        df = df.dropna(subset=['Close', 'Open', 'High', 'Low', 'Volume'])
-        df = df[(df['Close'] > 0) & (df['High'] >= df['Low'])]
-        df = self.feature_engineer.remove_outliers(df, 'Close')
+        df = self.feature_engineer.add_features(df, sectors_list)
+        logger.info(f"Długość danych po dodaniu cech: {len(df)}")
 
-        # Wypełnianie NaN dla wszystkich cech numerycznych
         numeric_features = [
             "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI",
             "MACD", "MACD_Signal", "MACD_Histogram", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
@@ -332,6 +314,10 @@ class DataPreprocessor:
                 except Exception as e:
                     logger.error(f"Błąd podczas transformacji cechy {feature}: {e}")
 
+        # Nowe: Zapisz przetworzony df do pliku pickle (przed stworzeniem datasetu)
+        df.to_pickle(self.processed_df_path)
+        logger.info(f"Przetworzony DataFrame zapisany do: {self.processed_df_path}")
+
         targets = ["Relative_Returns", "Future_Volume", "Future_Volatility"]
         
         categorical_features = ["Day_of_Week", "Month"]
@@ -367,3 +353,78 @@ class DataPreprocessor:
         
         dataset.save(self.processed_data_path)
         return dataset
+
+    def prepare_prediction_data(self, df: pd.DataFrame, normalizers: dict, ticker: str, historical_mode: bool = False, trim_days: int = 0) -> tuple[pd.DataFrame, pd.Series]:
+        """Przygotowuje dane dla predykcji: dodaje cechy, wypełnia NaN, log, normalizuje, dodaje indeksy. Zwraca przetworzony df i original_close."""
+        start_time = time.time()
+        df = df[df['Ticker'] == ticker].copy().reset_index(drop=True)
+        logger.info(f"Długość ticker_data po filtrowaniu tickera: {len(df)}")
+        df['Date'] = pd.to_datetime(df['Date'], utc=True)
+
+        original_close = df['Close'].copy()
+        
+        if historical_mode and trim_days > 0:
+            df = df.iloc[:-trim_days].copy()
+            original_close = original_close.iloc[:-trim_days].copy()
+        
+        df = self.feature_engineer.add_features(df)
+        logger.info(f"Długość ticker_data po dodaniu cech: {len(df)}")
+        df = df.dropna(subset=['Close', 'Open', 'High', 'Low', 'Volume'])
+        logger.info(f"Długość ticker_data po dropna: {len(df)}")
+        df = df[(df['Close'] > 0) & (df['High'] >= df['Low'])]
+        logger.info(f"Długość ticker_data po warunku: {len(df)}")
+        
+        original_close = original_close.loc[df.index].copy()
+        logger.info(f"Długość original_close po przycięciu: {len(original_close)}")
+        
+        numeric_features = [
+            "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI",
+            "MACD", "MACD_Signal", "MACD_Histogram", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
+            "ADX", "CCI", "Tenkan_sen", "Kijun_sen", "Senkou_Span_A", "Senkou_Span_B", "ROC", "VWAP",
+            "Momentum_20d", "Close_to_MA_ratio", "BB_width", "Close_to_BB_upper", "Close_to_BB_lower",
+            "Relative_Returns"
+        ]
+        for feature in numeric_features:
+            if feature in df.columns:
+                nan_count = df[feature].isna().sum()
+                if nan_count > 0:
+                    logger.warning(f"Wypełniam {nan_count} wartości NaN w kolumnie {feature} (metoda ffill/bfill)")
+                    df[feature] = df[feature].ffill().bfill().fillna(0)
+
+        df['time_idx'] = range(len(df))
+        df['group_id'] = ticker
+        
+        df['Day_of_Week'] = df['Date'].dt.dayofweek.astype(str)
+        if df['Day_of_Week'].isna().any():
+            logger.warning(f"Znaleziono NaN w Day_of_Week, wypełniam wartością '0'")
+            df['Day_of_Week'] = df['Day_of_Week'].fillna('0')
+        df['Day_of_Week'] = pd.Categorical(df['Day_of_Week'], categories=self.day_of_week_categories, ordered=False)
+        
+        df['Sector'] = pd.Categorical(df['Sector'], categories=self.config['model']['sectors'], ordered=False)
+        
+        log_features = [
+            "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "ATR", "BB_width",
+            "Tenkan_sen", "Kijun_sen", "Senkou_Span_A", "Senkou_Span_B", "VWAP"
+        ]
+        for feature in log_features:
+            if feature in df.columns:
+                df[feature] = np.log1p(df[feature].clip(lower=0))
+
+        for feature in numeric_features:
+            if feature in df.columns and feature in normalizers:
+                try:
+                    df[feature] = normalizers[feature].transform(df[feature].values)
+                    if df[feature].isna().any() or np.isinf(df[feature]).any():
+                        logger.error(f"Transformacja cechy {feature} spowodowała NaN lub inf")
+                except Exception as e:
+                    logger.error(f"Błąd podczas transformacji cechy {feature}: {e}")
+
+        categorical_columns = ['Day_of_Week', 'Month']
+        for cat_col in categorical_columns:
+            if cat_col in df.columns:
+                df[cat_col] = df[cat_col].astype(str)
+
+        total_duration = time.time() - start_time
+        logger.info(f"Całkowity czas prepare_prediction_data: {total_duration:.3f} sekundy")
+        logger.info(f"Kolumny przetworzonego df: {df.columns.tolist()}")
+        return df, original_close

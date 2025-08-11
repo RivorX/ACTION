@@ -109,69 +109,9 @@ def load_data_and_model(config, ticker, temp_raw_data_path, historical_mode=Fals
     return result
 
 def preprocess_data(config, ticker_data, ticker, normalizers, historical_mode=False, trim_days=0):
-    """Preprocessuje dane z optymalizacją i logowaniem czasu."""
-    start_time = time.time()
-    ticker_data = ticker_data[ticker_data['Ticker'] == ticker].copy().reset_index(drop=True)
-    logger.info(f"Długość ticker_data po filtrowaniu tickera: {len(ticker_data)}")
-    ticker_data['Date'] = pd.to_datetime(ticker_data['Date'], utc=True)
-
-    original_close = ticker_data['Close'].copy()
-    
-    if historical_mode and trim_days > 0:
-        ticker_data = ticker_data.iloc[:-trim_days].copy()
-        original_close = original_close.iloc[:-trim_days].copy()
-    
+    """Preprocessuje dane używając wspólnej metody z DataPreprocessor."""
     preprocessor = DataPreprocessor(config)
-    ticker_data = preprocessor.feature_engineer.add_features(ticker_data)
-    logger.info(f"Długość ticker_data po dodaniu cech: {len(ticker_data)}")
-    ticker_data = ticker_data.dropna(subset=['Close', 'Open', 'High', 'Low', 'Volume'])
-    logger.info(f"Długość ticker_data po dropna: {len(ticker_data)}")
-    ticker_data = ticker_data[(ticker_data['Close'] > 0) & (ticker_data['High'] >= ticker_data['Low'])]
-    logger.info(f"Długość ticker_data po warunku: {len(ticker_data)}")
-    
-    original_close = original_close.loc[ticker_data.index].copy()
-    logger.info(f"Długość original_close po przycięciu: {len(original_close)}")
-    
-    ticker_data['time_idx'] = range(len(ticker_data))
-    ticker_data['group_id'] = ticker
-    
-    ticker_data['Day_of_Week'] = ticker_data['Date'].dt.dayofweek.astype(str)
-    if ticker_data['Day_of_Week'].isna().any():
-        logger.warning(f"Znaleziono NaN w Day_of_Week, wypełniam wartością '0'")
-        ticker_data['Day_of_Week'] = ticker_data['Day_of_Week'].fillna('0')
-    ticker_data['Day_of_Week'] = pd.Categorical(ticker_data['Day_of_Week'], 
-                                               categories=[str(i) for i in range(7)], 
-                                               ordered=False)
-    
-    ticker_data['Sector'] = pd.Categorical(ticker_data['Sector'], categories=config['model']['sectors'], ordered=False)
-    
-    log_features = [
-        "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "ATR", "BB_width",
-        "Tenkan_sen", "Kijun_sen", "Senkou_Span_A", "Senkou_Span_B", "VWAP"
-    ]
-    for feature in log_features:
-        if feature in ticker_data.columns:
-            ticker_data[feature] = np.log1p(ticker_data[feature].clip(lower=0))
-
-    numeric_features = [
-        "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI",
-        "MACD", "MACD_Signal", "MACD_Histogram", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
-        "ADX", "CCI", "Tenkan_sen", "Kijun_sen", "Senkou_Span_A", "Senkou_Span_B", "ROC", "VWAP",
-        "Momentum_20d", "Close_to_MA_ratio", "BB_width", "Close_to_BB_upper", "Close_to_BB_lower",
-        "Relative_Returns"
-    ]
-    for feature in numeric_features:
-        if feature in ticker_data.columns and feature in normalizers:
-            ticker_data[feature] = normalizers[feature].transform(ticker_data[feature].values)
-
-    categorical_columns = ['Day_of_Week', 'Month']
-    for cat_col in categorical_columns:
-        if cat_col in ticker_data.columns:
-            ticker_data[cat_col] = ticker_data[cat_col].astype(str)
-
-    total_duration = time.time() - start_time
-    logger.info(f"Całkowity czas preprocess_data: {total_duration:.3f} sekundy")
-    logger.info(f"Kolumny ticker_data: {ticker_data.columns.tolist()}")
+    ticker_data, original_close = preprocessor.prepare_prediction_data(ticker_data, normalizers, ticker, historical_mode, trim_days)
     return ticker_data, original_close
 
 def generate_predictions(config, dataset, model, ticker_data):

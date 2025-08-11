@@ -75,89 +75,22 @@ def objective(trial, train_dataset: TimeSeriesDataSet, val_dataset: TimeSeriesDa
 def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = True, continue_training: bool = False, new_lr: float = None):
     logger.info("Rozpoczynanie treningu modelu...")
     
-    # Pobierz dane z raw_data_path i odfiltruj tylko wybrane tickery
-    df = pd.read_csv(config['data']['raw_data_path'])
-    selected_tickers = config['data']['tickers']
-    df = df[df['Ticker'].isin(selected_tickers)]
+    # Nowe: Ładuj przetworzony df z pliku pickle (zamiast przetwarzać raw_data od zera)
+    processed_df_path = Path(config['data']['processed_df_path'])
+    if not processed_df_path.exists():
+        raise FileNotFoundError(f"Przetworzony DataFrame nie istnieje w {processed_df_path}")
+    df = pd.read_pickle(processed_df_path)
+    logger.info(f"Wczytano przetworzony DataFrame z {processed_df_path}, długość: {len(df)}")
+    
     if df.empty:
-        raise ValueError(f"Brak danych dla wybranych tickerów: {selected_tickers}")
+        raise ValueError("Przetworzony DataFrame jest pusty")
     
-    preprocessor = DataPreprocessor(config)
-    df = preprocessor.feature_engineer.add_features(df)
-    df = df.dropna(subset=['Close', 'Open', 'High', 'Low', 'Volume'])
-    df = df[(df['Close'] > 0) & (df['High'] >= df['Low'])]
-    df['Date'] = pd.to_datetime(df['Date'], utc=True)
-    df['time_idx'] = (df['Date'] - df['Date'].min()).dt.days.astype(int)
-    df['group_id'] = df['Ticker']
-    
-    # Upewnij się, że Sector i Day_of_Week są kategoryczne
+    # Upewnij się, że Sector i Day_of_Week są kategoryczne (zachowane z pickle)
     df['Sector'] = pd.Categorical(df['Sector'], categories=config['model']['sectors'], ordered=False)
     df['Day_of_Week'] = pd.Categorical(df['Day_of_Week'], categories=[str(i) for i in range(7)], ordered=False)
     logger.info(f"Kategorie sektorów w train.py: {df['Sector'].cat.categories.tolist()}")
     logger.info(f"Kategorie dni tygodnia w train.py: {df['Day_of_Week'].cat.categories.tolist()}")
     
-    # Wczytaj normalizery
-    normalizers_path = Path(config['paths']['models_dir']) / 'normalizers' / f"{config['model_name']}_normalizers.pkl"
-    with open(normalizers_path, 'rb') as f:
-        normalizers = pickle.load(f)
-    logger.info(f"Wczytano normalizery z: {normalizers_path}")
-    
-    # Transformacja logarytmiczna
-    log_features = [
-        "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "ATR", "BB_width",
-        "Tenkan_sen", "Kijun_sen", "Senkou_Span_A", "Senkou_Span_B", "VWAP"
-    ]
-    
-    for feature in log_features:
-        if feature in df.columns:
-            df[feature] = np.log1p(df[feature].clip(lower=0))
-    
-    # Normalizacja z sprawdzeniem dostępności cech
-    numeric_features = [
-        "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI",
-        "MACD", "MACD_Signal", "MACD_Histogram", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
-        "ADX", "CCI", "Tenkan_sen", "Kijun_sen", "Senkou_Span_A", "Senkou_Span_B", "ROC", "VWAP",
-        "Momentum_20d", "Close_to_MA_ratio", "BB_width", "Close_to_BB_upper", "Close_to_BB_lower",
-        "Relative_Returns"
-    ]
-    
-    for feature in numeric_features:
-        if feature in df.columns and feature in normalizers:
-            try:
-                df[feature] = normalizers[feature].transform(df[feature].values)
-                if df[feature].isna().any() or np.isinf(df[feature]).any():
-                    logger.error(f"Transformacja cechy {feature} spowodowała NaN lub inf")
-            except Exception as e:
-                logger.error(f"Błąd transformacji cechy {feature}: {e}")
-        elif feature in df.columns:
-            logger.info(f"Pomijanie normalizacji dla cechy {feature}, ponieważ nie jest w normalizers.pkl")
-
-    for col in numeric_features:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce').astype(float)
-            nan_count = df[col].isna().sum()
-            if nan_count > 0:
-                logger.warning(f"Cecha {col} ma {nan_count} wartości NaN po konwersji")
-    
-    # Nowe zabezpieczenie: Wypełnij NaN w cechach numerycznych (ffill/bfill w ramach grupy, potem średnią jeśli potrzeba)
-    for col in numeric_features:
-        if col in df.columns and df[col].isna().any():
-            nan_count = df[col].isna().sum()
-            logger.warning(f"Wypełniam {nan_count} NaN w cesze {col} metodą ffill/bfill w ramach grupy (tickera).")
-            df[col] = df.groupby('group_id')[col].transform(lambda x: x.fillna(method='ffill').fillna(method='bfill'))
-            # Jeśli nadal NaN (np. cała grupa NaN), wypełnij globalną średnią
-            if df[col].isna().any():
-                remaining_nan = df[col].isna().sum()
-                logger.warning(f"Wciąż {remaining_nan} NaN w {col} – wypełniam globalną średnią.")
-                df[col] = df[col].fillna(df[col].mean())
-    
-    categorical_columns = ['Day_of_Week', 'Month']
-    for cat_col in categorical_columns:
-        if cat_col in df.columns:
-            if cat_col == 'Day_of_Week':
-                df[cat_col] = pd.Categorical(df[cat_col], categories=[str(i) for i in range(7)], ordered=False)
-            df[cat_col] = df[cat_col].astype(str)
-
     # Filtracja grup z wystarczającą liczbą rekordów
     min_val_records = config['model'].get('min_prediction_length', 1) + config['model'].get('min_encoder_length', 1)
     group_counts = df.groupby('group_id').size().reset_index(name='count')
@@ -173,7 +106,7 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
 
     logger.info(f"max_time_idx: {df['time_idx'].max()}, split_idx: {int(df['time_idx'].max() * 0.8)}")
 
-    # Tworzenie datasetów treningowego i walidacyjnego
+    # Tworzenie datasetów treningowego i walidacyjnego na podstawie parametrów pełnego datasetu
     train_dataset = TimeSeriesDataSet.from_parameters(
         dataset.get_parameters(),
         train_df,

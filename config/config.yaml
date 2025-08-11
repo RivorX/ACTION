@@ -2,7 +2,7 @@
 # Zawiera wszystkie ustawienia dla modelu, treningu, predykcji, danych i walidacji
 
 # Nazwa modelu
-model_name: Gen4_3x
+model_name: Gen6_0
 
 # Ustawienia modelu
 model:
@@ -79,6 +79,7 @@ data:
   valid_regions: ['poland', 'europe', 'usa', 'global', 'all']  # Lista dozwolonych regionów
   raw_data_path: data/stock_data.csv            # Ścieżka do surowych danych giełdowych
   processed_data_path: data/processed_dataset.pt # Ścieżka do przetworzonego datasetu
+  processed_df_path: data/processed_df.pkl       # Ścieżka do przetworzonego DataFrame
   tickers_file: config/tickers_with_names.yaml   # Plik z tickerami i nazwami spółek
   benchmark_tickers_file: config/benchmark_tickers.yaml # Plik z tickerami benchmarkowymi
 
