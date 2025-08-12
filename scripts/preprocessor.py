@@ -32,73 +32,12 @@ class FeatureEngineer:
         return 100 - (100 / (1 + rs))
 
     @staticmethod
-    def calculate_macd(prices: pd.Series) -> tuple:
-        """Oblicza MACD, linię sygnałową i histogram MACD."""
+    def calculate_macd(prices: pd.Series) -> pd.Series:
+        """Oblicza MACD."""
         exp12 = prices.ewm(span=12, adjust=False).mean()
         exp26 = prices.ewm(span=26, adjust=False).mean()
         macd = exp12 - exp26
-        signal = macd.ewm(span=9, adjust=False).mean()
-        histogram = macd - signal
-        return macd, signal, histogram
-
-    @staticmethod
-    def calculate_stochastic_k(group: pd.DataFrame) -> pd.Series:
-        """Oblicza Stochastic %K."""
-        low_14 = group['Low'].rolling(window=14).min()
-        high_14 = group['High'].rolling(window=14).max()
-        return 100 * (group['Close'] - low_14) / (high_14 - low_14)
-
-    @staticmethod
-    def calculate_true_range(group: pd.DataFrame) -> pd.Series:
-        """Oblicza True Range."""
-        high_low = group['High'] - group['Low']
-        high_close_prev = abs(group['High'] - group['Close'].shift(1))
-        low_close_prev = abs(group['Low'] - group['Close'].shift(1))
-        return pd.concat([high_low, high_close_prev, low_close_prev], axis=1).max(axis=1)
-
-    @staticmethod
-    def calculate_obv(group: pd.DataFrame) -> pd.Series:
-        """Oblicza On-Balance Volume."""
-        return (np.sign(group['Close'].diff()) * group['Volume']).cumsum()
-
-    @staticmethod
-    def calculate_adx(group: pd.DataFrame, period: int = 14) -> pd.Series:
-        """Oblicza Average Directional Index (ADX)."""
-        tr = FeatureEngineer.calculate_true_range(group)
-        plus_dm = group['High'].diff().where(lambda x: x > 0, 0)
-        minus_dm = (-group['Low'].diff()).where(lambda x: x > 0, 0)
-        
-        plus_di = 100 * (plus_dm.ewm(span=period, adjust=False).mean() / tr.ewm(span=period, adjust=False).mean())
-        minus_di = 100 * (minus_dm.ewm(span=period, adjust=False).mean() / tr.ewm(span=period, adjust=False).mean())
-        
-        dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
-        adx = dx.ewm(span=period, adjust=False).mean()
-        return adx
-
-    @staticmethod
-    def calculate_cci(group: pd.DataFrame, period: int = 20) -> pd.Series:
-        """Oblicza Commodity Channel Index (CCI)."""
-        typical_price = (group['High'] + group['Low'] + group['Close']) / 3
-        sma_tp = typical_price.rolling(window=period).mean()
-        mean_dev = (typical_price - sma_tp).abs().rolling(window=period).mean()
-        cci = (typical_price - sma_tp) / (0.015 * mean_dev)
-        return cci
-
-    @staticmethod
-    def calculate_ichimoku(group: pd.DataFrame) -> tuple:
-        """Oblicza linie Ichimoku Cloud: Tenkan-sen, Kijun-sen, Senkou Span A, Senkou Span B."""
-        high_9 = group['High'].rolling(window=9).max()
-        low_9 = group['Low'].rolling(window=9).min()
-        tenkan_sen = (high_9 + low_9) / 2
-
-        high_26 = group['High'].rolling(window=26).max()
-        low_26 = group['Low'].rolling(window=26).min()
-        kijun_sen = (high_26 + low_26) / 2
-
-        senkou_span_a = (tenkan_sen + kijun_sen) / 2
-        senkou_span_b = (group['High'].rolling(window=52).max() + group['Low'].rolling(window=52).min()) / 2
-
-        return tenkan_sen, kijun_sen, senkou_span_a, senkou_span_b
+        return macd
 
     @staticmethod
     def calculate_roc(prices: pd.Series, period: int = 20) -> pd.Series:
@@ -108,7 +47,7 @@ class FeatureEngineer:
     @staticmethod
     def calculate_vwap(group: pd.DataFrame) -> pd.Series:
         """Oblicza Volume Weighted Average Price (VWAP)."""
-        typical_price = (group['High'] + group['Low'] + group['Close']) / 3
+        typical_price = (group['Close'] + group['Close'] + group['Close']) / 3
         vwap = (typical_price * group['Volume']).cumsum() / group['Volume'].cumsum()
         return vwap
 
@@ -130,24 +69,13 @@ class FeatureEngineer:
             group['MA10'] = group['Close'].rolling(window=10).mean()
             group['MA50'] = group['Close'].rolling(window=50).mean()
             
-            # Bollinger Bands
+            # Bollinger Bands (tylko górna granica)
             group['BB_upper'] = group['Close'].rolling(window=20).mean() + 2 * group['Close'].rolling(window=20).std()
-            group['BB_lower'] = group['Close'].rolling(window=20).mean() - 2 * group['Close'].rolling(window=20).std()
-            group['BB_width'] = group['BB_upper'] - group['BB_lower']
             group['Close_to_BB_upper'] = group['Close'] / group['BB_upper']
-            group['Close_to_BB_lower'] = group['Close'] / group['BB_lower']
 
             # Wskaźniki techniczne
             group['RSI'] = self.compute_rsi(group['Close'])
-            group['MACD'], group['MACD_Signal'], group['MACD_Histogram'] = self.calculate_macd(group['Close'])
-            group['Stochastic_K'] = self.calculate_stochastic_k(group)
-            group['Stochastic_D'] = group['Stochastic_K'].rolling(window=3).mean()
-            group['TR'] = self.calculate_true_range(group)
-            group['ATR'] = group['TR'].rolling(window=14).mean()
-            group['OBV'] = self.calculate_obv(group)
-            group['ADX'] = self.calculate_adx(group)
-            group['CCI'] = self.calculate_cci(group)
-            group['Tenkan_sen'], group['Kijun_sen'], group['Senkou_Span_A'], group['Senkou_Span_B'] = self.calculate_ichimoku(group)
+            group['MACD'] = self.calculate_macd(group['Close'])
             group['ROC'] = self.calculate_roc(group['Close'])
             group['VWAP'] = self.calculate_vwap(group)
 
@@ -155,9 +83,6 @@ class FeatureEngineer:
             group['Momentum_20d'] = group['Close'] - group['Close'].shift(20)
             group['Close_to_MA_ratio'] = group['Close'] / group['MA50']
             group['Relative_Returns'] = group['Close'].pct_change()
-            group['Log_Returns'] = np.log1p(group['Relative_Returns'])
-            group['Future_Volume'] = group['Volume'].shift(-1)
-            group['Future_Volatility'] = group['Relative_Returns'].rolling(window=5).std().shift(-1)
 
             group['Month'] = group['Date'].dt.month.astype(str)
             group['Day_of_Week'] = group['Date'].dt.dayofweek.astype(str)
@@ -169,85 +94,60 @@ class FeatureEngineer:
             
             # Wypełnianie brakujących wartości dla innych cech
             features_to_fill = [
-                'MA10', 'MA50', 'BB_upper', 'BB_lower', 'BB_width', 'Close_to_BB_upper', 'Close_to_BB_lower',
-                'RSI', 'MACD', 'MACD_Signal', 'MACD_Histogram', 'Stochastic_K', 'Stochastic_D', 'TR', 'ATR',
-                'OBV', 'ADX', 'CCI', 'Tenkan_sen', 'Kijun_sen', 'Senkou_Span_A', 'Senkou_Span_B', 'ROC', 'VWAP',
-                'Momentum_20d', 'Close_to_MA_ratio', 'Log_Returns', 'Future_Volume', 'Future_Volatility'
+                'MA10', 'MA50', 'BB_upper', 'Close_to_BB_upper',
+                'RSI', 'MACD', 'ROC', 'VWAP',
+                'Momentum_20d', 'Close_to_MA_ratio'
             ]
             for feature in features_to_fill:
                 if feature in group.columns:
-                    group[feature] = group[feature].ffill().bfill().fillna(0)
-
+                    group[feature] = group[feature].ffill().bfill()
+            
             return group
 
         df = df.groupby('Ticker').apply(apply_features).reset_index(drop=True)
-        df = df.dropna(subset=['Close', 'Open', 'High', 'Low', 'Volume'])
-        df = df[(df['Close'] > 0) & (df['High'] >= df['Low'])]
+        
+        if sectors_list:
+            df['Sector'] = pd.Categorical(df['Sector'], categories=sectors_list, ordered=False)
+        
         return df
 
 class DataPreprocessor:
     def __init__(self, config: dict):
+        """Inicjalizuje DataPreprocessor z konfiguracją."""
         self.config = config
-        self.config_manager = ConfigManager()
-        self.feature_engineer = FeatureEngineer()
         self.model_name = config['model_name']
-        self.processed_data_path = Path(config['data']['processed_data_path'])
-        self.processed_df_path = Path(config['data']['processed_df_path'])  # Nowe: ścieżka do przetworzonego df
+        self.config_manager = ConfigManager()
         self.day_of_week_categories = [str(i) for i in range(7)]
+        self.processed_df_path = Path(config['data']['processed_df_path'])
+        self.processed_data_path = Path(config['data']['processed_data_path'])
 
     def process_data(self, mode: str = 'train', df: pd.DataFrame = None, normalizers: dict = None, ticker: str = None, historical_mode: bool = False, trim_days: int = 0):
-        """Uniwersalna metoda przetwarzania danych. Mode: 'train' (zwraca dataset) lub 'predict' (zwraca tuple(df, original_close))."""
-        if mode not in ['train', 'predict']:
-            raise ValueError("Mode musi być 'train' lub 'predict'.")
-        
-        if df is None:
-            raise ValueError("DataFrame 'df' jest wymagany.")
-        
+        """Przetwarza dane dla trybu treningu lub predykcji."""
         start_time = time.time()
-        df = df.copy()
-        df['Date'] = pd.to_datetime(df['Date'], utc=True)
-
-        if mode == 'predict':
-            if ticker is None:
-                raise ValueError("Ticker jest wymagany w trybie 'predict'.")
-            df = df[df['Ticker'] == ticker].copy().reset_index(drop=True)
-            logger.info(f"Długość danych po filtrowaniu tickera: {len(df)}")
-
-            original_close = df['Close'].copy()
-            
-            if historical_mode and trim_days > 0:
-                df = df.iloc[:-trim_days].copy()
-                original_close = original_close.iloc[:-trim_days].copy()
-            
-            if normalizers is None:
-                raise ValueError("Normalizery są wymagane w trybie 'predict'.")
-
-        # Wspólna inżynieria cech
-        sectors_list = self.config['model']['sectors']
-        df = self.feature_engineer.add_features(df, sectors_list)
-        logger.info(f"Długość danych po dodaniu cech: {len(df)}")
-        df = df.dropna(subset=['Close', 'Open', 'High', 'Low', 'Volume'])
-        logger.info(f"Długość danych po dropna: {len(df)}")
-        df = df[(df['Close'] > 0) & (df['High'] >= df['Low'])]
-        logger.info(f"Długość danych po warunku: {len(df)}")
-        
-        if mode == 'predict':
-            original_close = original_close.loc[df.index].copy()
-            logger.info(f"Długość original_close po przycięciu: {len(original_close)}")
-        
         numeric_features = [
-            "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI",
-            "MACD", "MACD_Signal", "MACD_Histogram", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
-            "ADX", "CCI", "Tenkan_sen", "Kijun_sen", "Senkou_Span_A", "Senkou_Span_B", "ROC", "VWAP",
-            "Momentum_20d", "Close_to_MA_ratio", "BB_width", "Close_to_BB_upper", "Close_to_BB_lower",
-            "Relative_Returns"
+            "Close", "Volume", "MA10", "MA50", "RSI", "MACD", "ROC", "VWAP",
+            "Momentum_20d", "Close_to_MA_ratio", "Close_to_BB_upper", "Relative_Returns"
         ]
-        for feature in numeric_features:
-            if feature in df.columns:
-                nan_count = df[feature].isna().sum()
-                if nan_count > 0:
-                    logger.warning(f"Wypełniam {nan_count} wartości NaN w kolumnie {feature} (metoda ffill/bfill)")
-                    df[feature] = df[feature].ffill().bfill().fillna(0)
+
+        if mode == 'train':
+            if df is None:
+                logger.error("Brak danych wejściowych dla trybu 'train'")
+                raise ValueError("DataFrame musi być dostarczony dla trybu 'train'")
+            if historical_mode:
+                logger.warning("historical_mode=True w trybie 'train' zostanie zignorowane")
+            if trim_days > 0:
+                logger.warning("trim_days>0 w trybie 'train' zostanie zignorowane")
+        elif mode == 'predict':
+            if df is None or ticker is None:
+                logger.error("Brak danych lub tickera dla trybu 'predict'")
+                raise ValueError("DataFrame i ticker muszą być dostarczone dla trybu 'predict'")
+            if historical_mode and trim_days > 0:
+                df = df[df['Date'] >= df['Date'].max() - pd.Timedelta(days=trim_days)]
+            original_close = df['Close'].copy()
+            df['Ticker'] = ticker
+
+        feature_engineer = FeatureEngineer()
+        df = feature_engineer.add_features(df, sectors_list=self.config['model']['sectors'])
 
         df['time_idx'] = range(len(df))
         df['group_id'] = ticker if mode == 'predict' else df['Ticker']
@@ -261,8 +161,7 @@ class DataPreprocessor:
         df['Sector'] = pd.Categorical(df['Sector'], categories=self.config['model']['sectors'], ordered=False)
         
         log_features = [
-            "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "ATR", "BB_width",
-            "Tenkan_sen", "Kijun_sen", "Senkou_Span_A", "Senkou_Span_B", "VWAP"
+            "Close", "Volume", "MA10", "MA50", "VWAP"
         ]
         for feature in log_features:
             if feature in df.columns:
@@ -351,7 +250,7 @@ class DataPreprocessor:
             df.to_pickle(self.processed_df_path)
             logger.info(f"Przetworzony DataFrame zapisany do: {self.processed_df_path}")
 
-            targets = ["Relative_Returns", "Future_Volume", "Future_Volatility"]
+            targets = ["Relative_Returns"]
             
             categorical_features = ["Day_of_Week", "Month"]
             valid_categorical_features = [f for f in categorical_features if f in df.columns]

@@ -117,8 +117,9 @@ pip install -r requirements.txt
 
 Porównanie modeli:
 
-| Model       | Opis                              | Dokładność | Kier. dokładność | Długość predykcji | Czy działa | Szybkość treningu          | Liczba cech |
-|-------------|-----------------------------------|------------|------------------|-------------------|------------|----------------------------|-------------|
-| gen3        | Pierwszy użyteczny model          | 88.9%      | -                | 90 dni            | Nie        | 60 min/epoka, 30 próbek/s  | -           |
-| gen3mini    | Lżejsza wersja do szybkich testów | 87.8%      | -                | 90 dni            | Nie        | 20 min/epoka, 90 próbek/s  | -           |
-| gen4mini    | Zmniejszona liczba cech, dokładniejszy | 88.0% | 52.0%            | 90 dni            | Tak        | 20 min/epoka, 90 próbek/s  | 32+1        |
+| Model       | Opis                              | Dokładność | Długość predykcji | Szybkość treningu          | Total Params |
+|-------------|-----------------------------------|------------|-------------------|----------------------------|--------------|
+| gen3        | Pierwszy użyteczny model          | 88.9%      | 90 dni            | 60 min/epoka, 30 próbek/s  | -            |
+| gen3mini    | Lżejsza wersja do szybkich testów | 87.8%      | 90 dni            | 20 min/epoka, 90 próbek/s  | 2.7M         |
+| gen4mini    | Zmniejszona liczba cech           | 88.0%      | 90 dni            | 20 min/epoka, 90 próbek/s  | 2.7M         |
+| gen6        | Wersja z małą liczbą parametrów   |  -         | 90 dni            | 10 min/epoka, 192 próbek/s | 1.7M         |
