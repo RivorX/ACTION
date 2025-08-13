@@ -11,6 +11,8 @@ import numpy as np
 import sys
 import os
 import time
+import matplotlib.pyplot as plt
+
 # Dodaj katalog główny do ścieżek systemowych
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 from scripts.config_manager import ConfigManager 
@@ -128,6 +130,10 @@ class CustomTemporalFusionTransformer(LightningModule):
         self.val_batch_count = 0
         self.enable_detailed_validation = config['validation']['enable_detailed_validation']
         self.max_val_batches_to_log = config['validation']['max_validation_batches_to_log']
+        self.save_plots = config['validation']['save_plots']  # Pobieranie przełącznika zapisu wykresów
+        self.max_plots_per_epoch = config['validation']['max_plots_per_epoch']  # Maksymalna liczba wykresów na epokę
+        self.logs_dir = config['paths']['logs_dir']  # Ścieżka do katalogu logów
+        self.plot_count = 0  # Licznik wykresów w danej epoce
 
     def _load_normalizers(self):
         """Wczytuje normalizery za pomocą ConfigManager."""
@@ -296,60 +302,105 @@ class CustomTemporalFusionTransformer(LightningModule):
         return loss
     
     def _log_validation_details(self, x, y_hat, y_target, batch_idx):
-            """Wydzielona funkcja do logowania szczegółów walidacji."""
-            # Denormalizacja y_hat i y_target (Relative Returns)
-            relative_returns_normalizer = self.normalizers.get('Relative_Returns') or self.dataset.target_normalizer
-            if relative_returns_normalizer:
-                try:
-                    # Przeniesienie na CPU i konwersja na float32 przed denormalizacją
-                    y_hat_denorm = relative_returns_normalizer.inverse_transform(y_hat.float().cpu())
-                    y_target_denorm = relative_returns_normalizer.inverse_transform(y_target.float().cpu())
-                    
-                    # KONWERSJA RELATIVE RETURNS NA RZECZYWISTE CENY
-                    if 'encoder_cont' in x:
-                        encoder_cont = x['encoder_cont'][0].cpu()  # Pierwszy przykład z batcha
-                        close_normalizer = self.normalizers.get('Close')
-                        if close_normalizer is not None:
-                            try:
-                                # Znajdź pozycję Close w numeric_features
-                                numeric_features = [
-                                    "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI", "Volatility",
-                                    "MACD", "MACD_Signal", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
-                                    "Close_momentum_1d", "Close_momentum_5d", "Close_vs_MA10", "Close_vs_MA50",
-                                    "Close_percentile_20d", "Close_volatility_5d", "Close_RSI_divergence"
-                                ]
-                                close_idx = numeric_features.index("Close") if "Close" in numeric_features else None
+        """Wydzielona funkcja do logowania szczegółów walidacji."""
+        # Denormalizacja y_hat i y_target (Relative Returns)
+        relative_returns_normalizer = self.normalizers.get('Relative_Returns') or self.dataset.target_normalizer
+        if relative_returns_normalizer:
+            try:
+                # Przeniesienie na CPU i konwersja na float32 przed denormalizacją
+                y_hat_denorm = relative_returns_normalizer.inverse_transform(y_hat.float().cpu())
+                y_target_denorm = relative_returns_normalizer.inverse_transform(y_target.float().cpu())
+                
+                # KONWERSJA RELATIVE RETURNS NA RZECZYWISTE CENY
+                if 'encoder_cont' in x:
+                    encoder_cont = x['encoder_cont'][0].cpu()  # Pierwszy przykład z batcha
+                    close_normalizer = self.normalizers.get('Close')
+                    if close_normalizer is not None:
+                        try:
+                            # Znajdź pozycję Close w numeric_features
+                            numeric_features = [
+                                "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI", "Volatility",
+                                "MACD", "MACD_Signal", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
+                                "Close_momentum_1d", "Close_momentum_5d", "Close_vs_MA10", "Close_vs_MA50",
+                                "Close_percentile_20d", "Close_volatility_5d", "Close_RSI_divergence"
+                            ]
+                            close_idx = numeric_features.index("Close") if "Close" in numeric_features else None
+                            
+                            if close_idx is not None:
+                                # Pobierz ostatnią wartość Close z encodera
+                                last_close_norm = encoder_cont[-1, close_idx]
+                                last_close_denorm = close_normalizer.inverse_transform(torch.tensor([[last_close_norm]]))
+                                last_close_price = np.expm1(last_close_denorm.numpy())[0, 0]
                                 
-                                if close_idx is not None:
-                                    # Pobierz ostatnią wartość Close z encodera
-                                    last_close_norm = encoder_cont[-1, close_idx]
-                                    last_close_denorm = close_normalizer.inverse_transform(torch.tensor([[last_close_norm]]))
-                                    last_close_price = np.expm1(last_close_denorm.numpy())[0, 0]
-                                    
-                                    # Sprawdź rozsądność ceny
-                                    if last_close_price > 10000:
-                                        logger.warning(f"Bardzo wysoka cena Close: {last_close_price:.2f}")
-                                        last_close_price_alt = last_close_denorm.numpy()[0, 0]
-                                        if 10 <= last_close_price_alt <= 1000:
-                                            last_close_price = last_close_price_alt
-                                    
-                                    logger.info(f"Ostatnia cena Close z batcha: {last_close_price:.2f}")
-                                    
-                                    # Konwertuj tylko pierwsze 5 predykcji dla czytelności
-                                    self._convert_to_prices(y_hat_denorm, y_target_denorm, last_close_price, batch_idx)
-                                else:
-                                    logger.warning("Nie można znaleźć indeksu kolumny Close")
-                            except Exception as e:
-                                logger.error(f"Błąd podczas konwersji na rzeczywiste ceny: {e}")
-                        else:
-                            logger.warning("Brak normalizera dla Close")
+                                # Sprawdź rozsądność ceny
+                                if last_close_price > 10000:
+                                    logger.warning(f"Bardzo wysoka cena Close: {last_close_price:.2f}")
+                                    last_close_price_alt = last_close_denorm.numpy()[0, 0]
+                                    if 10 <= last_close_price_alt <= 1000:
+                                        last_close_price = last_close_price_alt
+                                
+                                logger.info(f"Ostatnia cena Close z batcha: {last_close_price:.2f}")
+                                
+                                # Konwertuj tylko pierwsze 5 predykcji dla czytelności
+                                self._convert_to_prices(y_hat_denorm, y_target_denorm, last_close_price, batch_idx)
+                            else:
+                                logger.warning("Nie można znaleźć indeksu kolumny Close")
+                        except Exception as e:
+                            logger.error(f"Błąd podczas konwersji na rzeczywiste ceny: {e}")
                     else:
-                        logger.warning("Brak danych encoder_cont w batchu")
-                        
-                except Exception as e:
-                    logger.error(f"Błąd podczas denormalizacji Relative Returns: {e}")
-            else:
-                logger.warning("Brak normalizera dla 'Relative_Returns'")
+                        logger.warning("Brak normalizera dla Close")
+                else:
+                    logger.warning("Brak danych encoder_cont w batchu")
+                    
+            except Exception as e:
+                logger.error(f"Błąd podczas denormalizacji Relative Returns: {e}")
+        else:
+            logger.warning("Brak normalizera dla 'Relative_Returns'")
+        
+        # Tworzenie wykresu, jeśli włączono zapis wykresów i limit nie został osiągnięty
+        if self.save_plots and self.plot_count < self.max_plots_per_epoch:
+            try:
+                self._create_validation_plot(y_hat_denorm, y_target_denorm, batch_idx)
+                self.plot_count += 1
+            except Exception as e:
+                logger.error(f"Błąd podczas tworzenia wykresu walidacyjnego: {e}")
+
+    def _create_validation_plot(self, y_hat_denorm, y_target_denorm, batch_idx):
+        """Tworzy wykres porównujący predykcje z rzeczywistymi wartościami."""
+        plt.figure(figsize=(10, 6))
+        
+        # Przygotowanie danych do wykresu
+        time_steps = np.arange(y_hat_denorm.shape[1])
+        
+        # Jeśli y_hat_denorm ma 3 wymiary (batch, time, quantiles), wybierz medianę (indeks 1)
+        if y_hat_denorm.dim() == 3:
+            y_hat_median = y_hat_denorm[0, :, 1].numpy()
+            y_hat_lower = y_hat_denorm[0, :, 0].numpy()  # Dolny kwantyl
+            y_hat_upper = y_hat_denorm[0, :, 2].numpy()  # Górny kwantyl
+        else:
+            y_hat_median = y_hat_denorm[0, :].numpy()
+            y_hat_lower = y_hat_median  # Fallback, jeśli brak kwantyli
+            y_hat_upper = y_hat_median
+        
+        y_target = y_target_denorm[0, :].numpy()
+        
+        # Rysowanie predykcji i rzeczywistych wartości
+        plt.plot(time_steps, y_target, label='Rzeczywiste', color='blue', marker='o')
+        plt.plot(time_steps, y_hat_median, label='Predykcja (mediana)', color='red', linestyle='--', marker='x')
+        plt.fill_between(time_steps, y_hat_lower, y_hat_upper, color='red', alpha=0.1, label='Przedział ufności (10%-90%)')
+        
+        plt.title(f'Predykcja vs Rzeczywiste - Batch {batch_idx}')
+        plt.xlabel('Krok czasowy')
+        plt.ylabel('Zwrot względny')
+        plt.legend()
+        plt.grid(True)
+        
+        # Zapisywanie wykresu
+        os.makedirs(self.logs_dir, exist_ok=True)
+        plot_path = os.path.join(self.logs_dir, f'validation_plot_batch_{batch_idx}_epoch_{self.current_epoch}.png')
+        plt.savefig(plot_path)
+        plt.close()
+        logger.info(f"Zapisano wykres walidacyjny: {plot_path}")
 
     def _convert_to_prices(self, y_hat_denorm, y_target_denorm, last_close_price, batch_idx):
         def to_scalar(tensor_val):
@@ -413,7 +464,7 @@ class CustomTemporalFusionTransformer(LightningModule):
         return self._shared_step(batch, batch_idx, 'val')
 
     def on_validation_epoch_end(self) -> None:
-        """Loguje val_l2_norm i learning_rate na końcu każdej epoki walidacyjnej."""
+        """Loguje val_l2_norm i learning_rate na końcu każdej epoki walidacyjnej oraz resetuje licznik wykresów."""
         val_l2_norm = self.trainer.callback_metrics.get("val_l2_norm", None)
         if val_l2_norm is not None:
             logger.info(f"Validation epoch end: val_l2_norm = {val_l2_norm:.4f}")
@@ -427,6 +478,7 @@ class CustomTemporalFusionTransformer(LightningModule):
         else:
             logger.warning("Optimizer nie jest dostępny, brak learning_rate")
         self.val_batch_count = 0
+        self.plot_count = 0  # Resetowanie licznika wykresów na końcu epoki
 
     def configure_optimizers(self) -> Dict[str, Any]:
         """Konfiguruje optymalizator i scheduler."""

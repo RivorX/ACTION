@@ -2,12 +2,12 @@
 # Zawiera wszystkie ustawienia dla modelu, treningu, predykcji, danych i walidacji
 
 # Nazwa modelu
-model_name: Gen6_0
+model_name: Gen6_0x
 
 # Ustawienia modelu
 model:
   # Parametry architektury modelu
-  max_prediction_length: 90       # Maksymalna długość predykcji (dni)
+  max_prediction_length: 60       # Maksymalna długość predykcji (dni)
   min_encoder_length: 50          # Minimalna długość danych wejściowych
   max_encoder_length: 180         # Maksymalna długość danych historycznych
   hidden_size: 128                # Rozmiar warstwy ukrytej
@@ -71,8 +71,10 @@ prediction:
 
 # Ustawienia walidacji
 validation:
-  enable_detailed_validation: false  # Czy włączyć szczegółowe logowanie walidacji
-  max_validation_batches_to_log: 3   # Maksymalna liczba batchy walidacyjnych do logowania
+  enable_detailed_validation: true  # Czy włączyć szczegółowe logowanie walidacji
+  max_validation_batches_to_log: 1   # Maksymalna liczba batchy walidacyjnych do logowania
+  save_plots: true                # Czy zapisywać wykresy walidacyjne
+  max_plots_per_epoch: 5          # Maksymalna liczba wykresów na epokę
 
 # Ustawienia danych
 data:

@@ -149,9 +149,10 @@ class DataPreprocessor:
         feature_engineer = FeatureEngineer()
         df = feature_engineer.add_features(df, sectors_list=self.config['model']['sectors'])
 
-        df['time_idx'] = range(len(df))
         df['group_id'] = ticker if mode == 'predict' else df['Ticker']
-        
+        df = df.sort_values(['group_id', 'Date'])
+        df['time_idx'] = df.groupby('group_id').cumcount()
+
         df['Day_of_Week'] = df['Date'].dt.dayofweek.astype(str)
         if df['Day_of_Week'].isna().any():
             logger.warning(f"Znaleziono NaN w Day_of_Week, wypełniam wartością '0'")
