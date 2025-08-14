@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 def create_directories():
     """Tworzy wymagane katalogi, jeśli nie istnieją."""
-    directories = ['data', 'models', 'models/normalizers', 'config', 'logs']
+    directories = ['data', 'data/train', 'models', 'models/normalizers', 'config', 'logs']
     for directory in directories:
         if not os.path.exists(directory):
             os.makedirs(directory)

@@ -75,38 +75,43 @@ def objective(trial, train_dataset: TimeSeriesDataSet, val_dataset: TimeSeriesDa
 def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = True, continue_training: bool = False, new_lr: float = None):
     logger.info("Rozpoczynanie treningu modelu...")
     
-    # Nowe: Ładuj przetworzony df z pliku pickle (zamiast przetwarzać raw_data od zera)
-    processed_df_path = Path(config['data']['processed_df_path'])
-    if not processed_df_path.exists():
-        raise FileNotFoundError(f"Przetworzony DataFrame nie istnieje w {processed_df_path}")
-    df = pd.read_pickle(processed_df_path)
-    logger.info(f"Wczytano przetworzony DataFrame z {processed_df_path}, długość: {len(df)}")
+    # Ładuj przetworzone train_df i val_df
+    train_processed_df_path = Path(config['data']['train_processed_df_path'])
+    val_processed_df_path = Path(config['data']['val_processed_df_path'])
     
-    if df.empty:
-        raise ValueError("Przetworzony DataFrame jest pusty")
+    if not train_processed_df_path.exists() or not val_processed_df_path.exists():
+        raise FileNotFoundError(f"Przetworzone DataFrame train/val nie istnieją w {train_processed_df_path} lub {val_processed_df_path}")
     
-    # Upewnij się, że Sector i Day_of_Week są kategoryczne (zachowane z pickle)
-    df['Sector'] = pd.Categorical(df['Sector'], categories=config['model']['sectors'], ordered=False)
-    df['Day_of_Week'] = pd.Categorical(df['Day_of_Week'], categories=[str(i) for i in range(7)], ordered=False)
-    logger.info(f"Kategorie sektorów w train.py: {df['Sector'].cat.categories.tolist()}")
-    logger.info(f"Kategorie dni tygodnia w train.py: {df['Day_of_Week'].cat.categories.tolist()}")
+    train_df = pd.read_pickle(train_processed_df_path)
+    val_df = pd.read_pickle(val_processed_df_path)
     
-    # Filtracja grup z wystarczającą liczbą rekordów
+    logger.info(f"Wczytano przetworzony train DataFrame z {train_processed_df_path}, długość: {len(train_df)}")
+    logger.info(f"Wczytano przetworzony val DataFrame z {val_processed_df_path}, długość: {len(val_df)}")
+    
+    if train_df.empty or val_df.empty:
+        raise ValueError("Przetworzone DataFrame train/val są puste")
+    
+    # Upewnij się, że Sector i Day_of_Week są kategoryczne
+    train_df['Sector'] = pd.Categorical(train_df['Sector'], categories=config['model']['sectors'], ordered=False)
+    train_df['Day_of_Week'] = pd.Categorical(train_df['Day_of_Week'], categories=[str(i) for i in range(7)], ordered=False)
+    val_df['Sector'] = pd.Categorical(val_df['Sector'], categories=config['model']['sectors'], ordered=False)
+    val_df['Day_of_Week'] = pd.Categorical(val_df['Day_of_Week'], categories=[str(i) for i in range(7)], ordered=False)
+    
+    logger.info(f"Kategorie sektorów w train.py: {train_df['Sector'].cat.categories.tolist()}")
+    logger.info(f"Kategorie dni tygodnia w train.py: {train_df['Day_of_Week'].cat.categories.tolist()}")
+    
+    # Filtracja grup z wystarczającą liczbą rekordów (dla train i val osobno, ale łącznie)
     min_val_records = config['model'].get('min_prediction_length', 1) + config['model'].get('min_encoder_length', 1)
+    df = pd.concat([train_df, val_df])
     group_counts = df.groupby('group_id').size().reset_index(name='count')
-    
     valid_groups = group_counts[group_counts['count'] >= min_val_records]['group_id']
+    train_df = train_df[train_df['group_id'].isin(valid_groups)]
+    val_df = val_df[val_df['group_id'].isin(valid_groups)]
     
-    df = df[df['group_id'].isin(valid_groups)]
-    train_df = df[df['time_idx'] <= int(df['time_idx'].max() * 0.8)]
-    val_df = df[df['time_idx'] > int(df['time_idx'].max() * 0.8)]
+    if train_df.empty or val_df.empty:
+        raise ValueError(f"Zbiory danych są puste po filtrowaniu: train_df={len(train_df)}, val_df={len(val_df)}")
     
-    if df.empty or train_df.empty or val_df.empty:
-        raise ValueError(f"Zbiory danych są puste po filtrowaniu: df={len(df)}, train_df={len(train_df)}, val_df={len(val_df)}")
-
-    logger.info(f"max_time_idx: {df['time_idx'].max()}, split_idx: {int(df['time_idx'].max() * 0.8)}")
-
-    # Tworzenie datasetów treningowego i walidacyjnego na podstawie parametrów pełnego datasetu
+    # Tworzenie datasetów treningowego i walidacyjnego na podstawie parametrów train_dataset (dataset to train_dataset parameters)
     train_dataset = TimeSeriesDataSet.from_parameters(
         dataset.get_parameters(),
         train_df,

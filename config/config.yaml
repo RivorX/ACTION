@@ -80,10 +80,12 @@ validation:
 data:
   valid_regions: ['poland', 'europe', 'usa', 'global', 'all']  # Lista dozwolonych regionów
   raw_data_path: data/stock_data.csv            # Ścieżka do surowych danych giełdowych
-  processed_data_path: data/processed_dataset.pt # Ścieżka do przetworzonego datasetu
-  processed_df_path: data/processed_df.pkl       # Ścieżka do przetworzonego DataFrame
+  processed_data_path: data/train/processed_dataset.pt # Ścieżka do przetworzonego datasetu
+  processed_df_path: data/train/processed_df.pkl       # Ścieżka do przetworzonego DataFrame
   tickers_file: config/tickers_with_names.yaml   # Plik z tickerami i nazwami spółek
   benchmark_tickers_file: config/benchmark_tickers.yaml # Plik z tickerami benchmarkowymi
+  train_processed_df_path: data/train/train_processed_df.pkl  # Ścieżka do przetworzonego DataFrame dla treningu
+  val_processed_df_path: data/train/val_processed_df.pkl      # Ścieżka do przetworzonego DataFrame dla walidacji
 
 # Ścieżki do zapisu
 paths:
