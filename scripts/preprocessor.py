@@ -280,17 +280,15 @@ class DataPreprocessor:
             logger.info(f"Przetworzony val DataFrame zapisany do: {self.val_processed_df_path}")
 
             targets = ["Relative_Returns"]
-            
-            categorical_features = ["Day_of_Week", "Month"]
-            valid_categorical_features = [f for f in categorical_features if f in train_df.columns]
+            valid_categorical_features = ['Day_of_Week', 'Month']
             
             logger.info(f"Kategorie dla Day_of_Week: {self.day_of_week_categories}")
             logger.info(f"Kategorie dla Sector: {self.config['model']['sectors']}")
             logger.info(f"Finalna lista cech numerycznych ({len(valid_numeric_features)}): {valid_numeric_features}")
             logger.info(f"Finalna lista cech kategorycznych ({len(valid_categorical_features)}): {valid_categorical_features}")
 
-            # Twórz dataset tylko na train_df (dla parametrów bez wycieku)
-            dataset = TimeSeriesDataSet(
+            # Twórz dataset dla train_df
+            train_dataset = TimeSeriesDataSet(
                 train_df,
                 time_idx="time_idx",
                 target="Relative_Returns",
@@ -299,9 +297,8 @@ class DataPreprocessor:
                 max_encoder_length=self.config['model']['max_encoder_length'],
                 max_prediction_length=self.config['model']['max_prediction_length'],
                 static_categoricals=["Sector"],
-                time_varying_known_reals=[f for f in valid_numeric_features if f not in targets],
                 time_varying_known_categoricals=valid_categorical_features,
-                time_varying_unknown_reals=["Relative_Returns"],
+                time_varying_unknown_reals=valid_numeric_features,
                 target_normalizer=normalizers.get("Relative_Returns", TorchNormalizer()),
                 allow_missing_timesteps=True,
                 add_encoder_length=False,
@@ -311,13 +308,35 @@ class DataPreprocessor:
                     'Month': NaNLabelEncoder(add_nan=False)
                 }
             )
-            logger.info(f"Target normalizer: {dataset.target_normalizer}")
             
-            dataset.save(self.processed_data_path)
+            # Twórz dataset dla val_df z predict_mode=True
+            val_dataset = TimeSeriesDataSet(
+                val_df,
+                time_idx="time_idx",
+                target="Relative_Returns",
+                group_ids=["group_id"],
+                min_encoder_length=self.config['model']['min_encoder_length'],
+                max_encoder_length=self.config['model']['max_encoder_length'],
+                max_prediction_length=self.config['model']['max_prediction_length'],
+                static_categoricals=["Sector"],
+                time_varying_known_categoricals=valid_categorical_features,
+                time_varying_unknown_reals=valid_numeric_features,
+                target_normalizer=normalizers.get("Relative_Returns", TorchNormalizer()),
+                allow_missing_timesteps=True,
+                add_encoder_length=False,
+                categorical_encoders={
+                    'Sector': NaNLabelEncoder(add_nan=False),
+                    'Day_of_Week': NaNLabelEncoder(add_nan=False),
+                    'Month': NaNLabelEncoder(add_nan=False)
+                },
+                predict_mode=True  # Kluczowe dla realistycznej walidacji
+            )
+            
+            train_dataset.save(self.processed_data_path)
             total_duration = time.time() - start_time
             logger.info(f"Całkowity czas process_data (train): {total_duration:.3f} sekundy")
             logger.info(f"Kolumny przetworzonego train_df: {train_df.columns.tolist()}")
-            return dataset
+            return train_dataset, val_dataset
 
         elif mode == 'predict':
             # Użyj istniejących normalizerów

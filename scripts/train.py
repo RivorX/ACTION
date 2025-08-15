@@ -44,7 +44,7 @@ class CustomModelCheckpoint(pl.callbacks.Callback):
             torch.save(checkpoint, self.save_path)
 
 def objective(trial, train_dataset: TimeSeriesDataSet, val_dataset: TimeSeriesDataSet, config: dict):
-    model = build_model(train_dataset, config, trial)
+    model = build_model(train_dataset, config, trial)  # Używamy train_dataset
     trainer = pl.Trainer(
         max_epochs=config['training']['max_epochs'],
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
@@ -72,8 +72,11 @@ def objective(trial, train_dataset: TimeSeriesDataSet, val_dataset: TimeSeriesDa
     ), val_dataloaders=val_dataloader)
     return trainer.callback_metrics["val_loss"].item()
 
-def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = True, continue_training: bool = False, new_lr: float = None):
+def train_model(dataset: tuple, config: dict, use_optuna: bool = True, continue_training: bool = False, new_lr: float = None):
     logger.info("Rozpoczynanie treningu modelu...")
+    
+    # Rozpakuj krotkę dataset na train_dataset i val_dataset
+    train_dataset, val_dataset = dataset
     
     # Ładuj przetworzone train_df i val_df
     train_processed_df_path = Path(config['data']['train_processed_df_path'])
@@ -111,28 +114,6 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
     if train_df.empty or val_df.empty:
         raise ValueError(f"Zbiory danych są puste po filtrowaniu: train_df={len(train_df)}, val_df={len(val_df)}")
     
-    # Tworzenie datasetów treningowego i walidacyjnego na podstawie parametrów train_dataset (dataset to train_dataset parameters)
-    train_dataset = TimeSeriesDataSet.from_parameters(
-        dataset.get_parameters(),
-        train_df,
-        static_categoricals=["Sector"], 
-        categorical_encoders={
-            'Sector': NaNLabelEncoder(add_nan=False),
-            'Day_of_Week': NaNLabelEncoder(add_nan=False),
-            'Month': NaNLabelEncoder(add_nan=False)
-        }
-    )
-    val_dataset = TimeSeriesDataSet.from_parameters(
-        dataset.get_parameters(),
-        val_df,
-        static_categoricals=["Sector"], 
-        categorical_encoders={
-            'Sector': NaNLabelEncoder(add_nan=False),
-            'Day_of_Week': NaNLabelEncoder(add_nan=False),
-            'Month': NaNLabelEncoder(add_nan=False)
-        }
-    )
-
     if len(val_dataset) == 0 or len(train_dataset) == 0:
         raise ValueError(f"Zbiory danych są puste: train_dataset={len(train_dataset)}, val_dataset={len(val_dataset)}")
 
@@ -163,7 +144,7 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
             hyperparams['learning_rate'] = new_lr
             logger.info(f"Zmieniono learning rate na {new_lr} dla kontynuacji treningu.")
         
-        final_model = build_model(dataset, config, hyperparams=hyperparams)
+        final_model = build_model(train_dataset, config, hyperparams=hyperparams)  # Używamy train_dataset
         try:
             final_model.load_state_dict(checkpoint["state_dict"])
             final_model.to(device)
@@ -174,7 +155,7 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
             raise
     else:
         logger.info("Brak modelu lub kontynuacja wyłączona, trenowanie od zera")
-        final_model = build_model(dataset, config, hyperparams=best_params)
+        final_model = build_model(train_dataset, config, hyperparams=best_params)  # Używamy train_dataset
 
     trainer = pl.Trainer(
         max_epochs=config['training']['max_epochs'],

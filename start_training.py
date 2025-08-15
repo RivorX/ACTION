@@ -3,8 +3,8 @@ import yaml
 import asyncio
 import logging
 from pathlib import Path
-import torch  
-import shutil  # Dodane dla kopiowania plików
+import torch
+import shutil
 from scripts.data_fetcher import DataFetcher
 from scripts.preprocessor import DataPreprocessor
 from scripts.train import train_model
@@ -21,6 +21,7 @@ def create_directories():
     for directory in directories:
         if not os.path.exists(directory):
             os.makedirs(directory)
+            logger.info(f"Utworzono katalog: {directory}")
 
 async def start_training(regions: str = 'global', years: int = 3, use_optuna: bool = False, continue_training: bool = True, use_transfer_learning: bool = False, old_model_filename: str = None, new_lr: float = None):
     """Uruchamia proces treningu modelu, w tym pobieranie danych, preprocessing, transfer wag i trening."""
@@ -60,9 +61,14 @@ async def start_training(regions: str = 'global', years: int = 3, use_optuna: bo
         config['data']['tickers'] = all_tickers
 
         # Pobieranie danych
+        logger.info("Pobieranie danych giełdowych...")
         df = await fetcher.fetch_global_stocks(region=None)
         if df.empty:
             raise ValueError("Nie udało się pobrać danych giełdowych.")
+
+        data_path = Path(config['data']['raw_data_path'])
+        df.to_csv(data_path, index=False)
+        logger.info(f"Dane zapisane do {data_path}")
 
         # Preprocessing danych
         logger.info("Preprocessing danych...")
@@ -82,6 +88,7 @@ async def start_training(regions: str = 'global', years: int = 3, use_optuna: bo
 
         preprocessor = DataPreprocessor(config)
         dataset = preprocessor.process_data(mode='train', df=df)
+        train_dataset, val_dataset = dataset  # Rozpakowanie krotki
 
         # Transfer learning
         if use_transfer_learning and not continue_training:
@@ -92,7 +99,7 @@ async def start_training(regions: str = 'global', years: int = 3, use_optuna: bo
                 raise FileNotFoundError(f"Plik {old_checkpoint_path} nie istnieje.")
 
             logger.info("Budowanie modelu dla transfer learningu...")
-            new_model = build_model(dataset, config)
+            new_model = build_model(train_dataset, config)  # Używamy train_dataset
             new_model, config = transfer_weights(
                 old_checkpoint_path=old_checkpoint_path,
                 new_model=new_model,
@@ -101,11 +108,15 @@ async def start_training(regions: str = 'global', years: int = 3, use_optuna: bo
                 device='cuda' if torch.cuda.is_available() else 'cpu'
             )
             logger.info(f"Model z przeniesionymi wagami zapisano w: {config['paths']['model_save_path']}")
+            # Po transferze, trenuj model
+            config['paths']['model_save_path'] = str(Path(config['paths']['models_dir']) / f"{model_name}.pth")
+            final_model = train_model(dataset, config, use_optuna=use_optuna, continue_training=True, new_lr=new_lr)
+        else:
+            # Trening modelu
+            logger.info("Trenowanie modelu...")
+            config['paths']['model_save_path'] = str(Path(config['paths']['models_dir']) / f"{model_name}.pth")
+            final_model = train_model(dataset, config, use_optuna=use_optuna, continue_training=continue_training, new_lr=new_lr)
 
-        # Trening modelu
-        logger.info("Trenowanie modelu...")
-        config['paths']['model_save_path'] = str(Path(config['paths']['models_dir']) / f"{model_name}.pth")
-        final_model = train_model(dataset, config, use_optuna=use_optuna, continue_training=continue_training, new_lr=new_lr)
         logger.info("Trening zakończony. Uruchom `streamlit run app.py`, aby użyć aplikacji.")
         return final_model
 

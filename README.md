@@ -122,4 +122,5 @@ Porównanie modeli:
 | gen3        | Pierwszy użyteczny model          | 88.9%      | 90 dni            | 60 min/epoka, 30 próbek/s  | -            |
 | gen3mini    | Lżejsza wersja do szybkich testów | 87.8%      | 90 dni            | 20 min/epoka, 90 próbek/s  | 2.7M         |
 | gen4mini    | Zmniejszona liczba cech           | 88.0%      | 90 dni            | 20 min/epoka, 90 próbek/s  | 2.7M         |
-| gen6        | Wersja z małą liczbą parametrów   |  -         | 90 dni            | 10 min/epoka, 192 próbek/s | 1.7M         |
+| gen6        | Wersja z małą liczbą parametrów   |  -         | 60 dni            | 10 min/epoka, 192 próbek/s | 1.7M         |
+| gen6_1      | Wersja gdzie model nie oczekuje parametrów z przyszłości, zbliżone do rzeczywistych warunków. Wymaga długiego treningu   |  -         | 60 dni            | 6 min/epoka, 300 próbek/s | 1.4M         |
