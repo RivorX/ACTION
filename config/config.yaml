@@ -71,10 +71,10 @@ prediction:
 
 # Ustawienia walidacji
 validation:
-  enable_detailed_validation: true  # Czy włączyć szczegółowe logowanie walidacji
-  max_validation_batches_to_log: 1   # Maksymalna liczba batchy walidacyjnych do logowania
-  save_plots: true                # Czy zapisywać wykresy walidacyjne
-  max_plots_per_epoch: 5          # Maksymalna liczba wykresów na epokę
+  enable_detailed_validation: false  # Czy włączyć szczegółowe logowanie walidacji
+  max_validation_batches_to_log: 2   # Maksymalna liczba batchy walidacyjnych do logowania
+  save_plots: true                   # Czy zapisywać wykresy walidacyjne
+  max_plots_per_epoch: 3             # Maksymalna liczba wykresów na epokę
 
 # Ustawienia danych
 data:

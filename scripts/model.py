@@ -284,20 +284,28 @@ class CustomTemporalFusionTransformer(LightningModule):
         except Exception as e:
             logger.warning(f"Nie można obliczyć l2_norm: {e}")
         
-        if stage == 'val' and self.enable_detailed_validation and self.val_batch_count < self.max_val_batches_to_log:
-            try:
-                self._log_validation_details(x, y_hat, y_target, batch_idx)
-                self.val_batch_count += 1
-            except Exception as e:
-                logger.error(f"Błąd w logowaniu szczegółów walidacji: {e}")
-        
         if stage == 'val':
-            return {
-                'val_loss': loss,
-                'val_l2_norm': torch.tensor(l2_norm, device=self.device),
-                'val_directional_accuracy': directional_accuracy,
-                'val_mape': mape,
-            }
+            # Szczegółowe logowanie walidacji (tylko jeśli włączone)
+            if self.enable_detailed_validation and self.val_batch_count < self.max_val_batches_to_log:
+                try:
+                    self._log_validation_details(x, y_hat, y_target, batch_idx)
+                    self.val_batch_count += 1
+                except Exception as e:
+                    logger.error(f"Błąd w logowaniu szczegółów walidacji: {e}")
+            # Generowanie wykresów niezależnie od enable_detailed_validation
+            if self.save_plots and self.plot_count < self.max_plots_per_epoch:
+                try:
+                    # Denormalizacja do wykresu
+                    relative_returns_normalizer = self.normalizers.get('Relative_Returns') or self.dataset.target_normalizer
+                    if relative_returns_normalizer:
+                        y_hat_denorm = relative_returns_normalizer.inverse_transform(y_hat.float().cpu())
+                        y_target_denorm = relative_returns_normalizer.inverse_transform(y_target.float().cpu())
+                        self._create_validation_plot(y_hat_denorm, y_target_denorm, batch_idx)
+                        self.plot_count += 1
+                    else:
+                        logger.warning("Brak normalizera dla 'Relative_Returns' do wykresu")
+                except Exception as e:
+                    logger.error(f"Błąd podczas tworzenia wykresu walidacyjnego: {e}")
         
         return loss
     
@@ -397,7 +405,7 @@ class CustomTemporalFusionTransformer(LightningModule):
         
         # Zapisywanie wykresu
         os.makedirs(self.logs_dir, exist_ok=True)
-        plot_path = os.path.join(self.logs_dir, f'validation_plot_batch_{batch_idx}_epoch_{self.current_epoch}.png')
+        plot_path = os.path.join(self.logs_dir, f'ValPlot_Batch_{batch_idx}_epoch_{self.current_epoch}.png')
         plt.savefig(plot_path)
         plt.close()
         logger.info(f"Zapisano wykres walidacyjny: {plot_path}")
@@ -508,5 +516,4 @@ def build_model(dataset, config: Dict[str, Any], trial=None, hyperparams: Option
         hyperparams = HyperparamFactory.from_checkpoint(hyperparams, model_config)
     else:
         hyperparams = model_config.default_hyperparams
-    logger.info(f"Budowanie modelu z hiperparametrami: {hyperparams}")
     return CustomTemporalFusionTransformer(dataset, config, hyperparams)

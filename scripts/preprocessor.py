@@ -309,7 +309,7 @@ class DataPreprocessor:
                 }
             )
             
-            # Twórz dataset dla val_df z predict_mode=True
+            # Twórz dataset dla val_df 
             val_dataset = TimeSeriesDataSet(
                 val_df,
                 time_idx="time_idx",
@@ -328,8 +328,7 @@ class DataPreprocessor:
                     'Sector': NaNLabelEncoder(add_nan=False),
                     'Day_of_Week': NaNLabelEncoder(add_nan=False),
                     'Month': NaNLabelEncoder(add_nan=False)
-                },
-                predict_mode=True  # Kluczowe dla realistycznej walidacji
+                }
             )
             
             train_dataset.save(self.processed_data_path)
