@@ -428,3 +428,24 @@ def load_benchmark_history(benchmark_tickers):
                                                  [(ticker, metric) for ticker in benchmark_tickers for metric in metrics])
         df = pd.DataFrame(columns=multi_columns).fillna('0.0')
         return df
+
+def delete_benchmark_row(date_str: str, model_name: str) -> bool:
+    """Usuwa wiersz historii benchmarku po Date i Model_Name."""
+    csv_file = 'data/benchmarks_history.csv'
+    try:
+        if not os.path.exists(csv_file):
+            logger.warning("Brak pliku historii benchmarków.")
+            return False
+        df = pd.read_csv(csv_file, dtype=str)
+        initial_len = len(df)
+        df = df[~((df['Date'] == date_str) & (df['Model_Name'] == model_name))]
+        if len(df) < initial_len:
+            df.to_csv(csv_file, index=False)
+            logger.info(f"Usunięto wiersz: Date={date_str}, Model_Name={model_name}")
+            return True
+        else:
+            logger.warning(f"Nie znaleziono wiersza do usunięcia: Date={date_str}, Model_Name={model_name}")
+            return False
+    except Exception as e:
+        logger.error(f"Błąd przy usuwaniu wiersza: {e}")
+        return False
