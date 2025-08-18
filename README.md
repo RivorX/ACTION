@@ -129,3 +129,7 @@ Porównanie modeli:
 | gen4mini    | Zmniejszona liczba cech           | 88.0%      | 90 dni            | 20 min/epoka, 90 próbek/s  | 2.7M         |
 | gen6        | Wersja z małą liczbą parametrów   |  -         | 60 dni            | 10 min/epoka, 192 próbek/s | 1.7M         |
 | gen6_1      | Wersja gdzie model nie oczekuje parametrów z przyszłości, zbliżone do rzeczywistych warunków. Wymaga długiego treningu   |  92%         | 60 dni            | 6 min/epoka, 300 próbek/s | 1.4M         |
+
+
+
+> **Uwaga**: Wartość `Szybkość treningu` jest względna i będzie się różnić w zależności od posiadanego sprzętu (CPU/GPU, ilości pamięci, sterowników i konfiguracji). Rzeczywiste czasy mogą się od niej różnić.
