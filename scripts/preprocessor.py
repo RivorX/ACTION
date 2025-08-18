@@ -1,369 +1,267 @@
 import pandas as pd
 import numpy as np
 from pytorch_forecasting.data import TimeSeriesDataSet
-from pytorch_forecasting.data.encoders import TorchNormalizer
+from pytorch_forecasting.data.encoders import TorchNormalizer, NaNLabelEncoder
 import pytorch_forecasting
 import torch
 import pickle
 import logging
 from pathlib import Path
+import time
 
 import sys
 import os
 # Dodaj katalog główny do ścieżek systemowych
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 from scripts.config_manager import ConfigManager 
+from scripts.utils.feature_engineer import FeatureEngineer
 
 # Konfiguracja logowania
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-class FeatureEngineer:
-    """Klasa do inżynierii cech dla danych giełdowych."""
-    
-    @staticmethod
-    def compute_rsi(prices: pd.Series, period: int = 14) -> pd.Series:
-        """Oblicza wskaźnik RSI."""
-        delta = prices.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-        rs = gain / loss
-        return 100 - (100 / (1 + rs))
-
-    @staticmethod
-    def calculate_macd(prices: pd.Series) -> tuple:
-        """Oblicza MACD, linię sygnałową i histogram MACD."""
-        exp12 = prices.ewm(span=12, adjust=False).mean()
-        exp26 = prices.ewm(span=26, adjust=False).mean()
-        macd = exp12 - exp26
-        signal = macd.ewm(span=9, adjust=False).mean()
-        histogram = macd - signal
-        return macd, signal, histogram
-
-    @staticmethod
-    def calculate_stochastic_k(group: pd.DataFrame) -> pd.Series:
-        """Oblicza Stochastic %K."""
-        low_14 = group['Low'].rolling(window=14).min()
-        high_14 = group['High'].rolling(window=14).max()
-        return 100 * (group['Close'] - low_14) / (high_14 - low_14)
-
-    @staticmethod
-    def calculate_true_range(group: pd.DataFrame) -> pd.Series:
-        """Oblicza True Range."""
-        high_low = group['High'] - group['Low']
-        high_close_prev = abs(group['High'] - group['Close'].shift(1))
-        low_close_prev = abs(group['Low'] - group['Close'].shift(1))
-        return pd.concat([high_low, high_close_prev, low_close_prev], axis=1).max(axis=1)
-
-    @staticmethod
-    def calculate_obv(group: pd.DataFrame) -> pd.Series:
-        """Oblicza On-Balance Volume."""
-        return (np.sign(group['Close'].diff()) * group['Volume']).cumsum()
-
-    @staticmethod
-    def calculate_adx(group: pd.DataFrame, period: int = 14) -> pd.Series:
-        """Oblicza Average Directional Index (ADX)."""
-        tr = FeatureEngineer.calculate_true_range(group)
-        plus_dm = group['High'].diff().where(lambda x: x > 0, 0)
-        minus_dm = (-group['Low'].diff()).where(lambda x: x > 0, 0)
-        
-        plus_di = 100 * (plus_dm.ewm(span=period, adjust=False).mean() / tr.ewm(span=period, adjust=False).mean())
-        minus_di = 100 * (minus_dm.ewm(span=period, adjust=False).mean() / tr.ewm(span=period, adjust=False).mean())
-        
-        dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
-        adx = dx.ewm(span=period, adjust=False).mean()
-        return adx
-
-    @staticmethod
-    def calculate_cci(group: pd.DataFrame, period: int = 20) -> pd.Series:
-        """Oblicza Commodity Channel Index (CCI)."""
-        typical_price = (group['High'] + group['Low'] + group['Close']) / 3
-        sma_tp = typical_price.rolling(window=period).mean()
-        mean_dev = (typical_price - sma_tp).abs().rolling(window=period).mean()
-        cci = (typical_price - sma_tp) / (0.015 * mean_dev)
-        return cci
-
-    @staticmethod
-    def calculate_ichimoku(group: pd.DataFrame) -> tuple:
-        """Oblicza linie Ichimoku Cloud: Tenkan-sen, Kijun-sen, Senkou Span A, Senkou Span B."""
-        high_9 = group['High'].rolling(window=9).max()
-        low_9 = group['Low'].rolling(window=9).min()
-        tenkan_sen = (high_9 + low_9) / 2
-
-        high_26 = group['High'].rolling(window=26).max()
-        low_26 = group['Low'].rolling(window=26).min()
-        kijun_sen = (high_26 + low_26) / 2
-
-        senkou_span_a = (tenkan_sen + kijun_sen) / 2
-        senkou_span_b = (group['High'].rolling(window=52).max() + group['Low'].rolling(window=52).min()) / 2
-
-        return tenkan_sen, kijun_sen, senkou_span_a, senkou_span_b
-
-    @staticmethod
-    def calculate_roc(prices: pd.Series, period: int = 20) -> pd.Series:
-        """Oblicza Price Rate of Change (ROC)."""
-        return 100 * (prices - prices.shift(period)) / prices.shift(period)
-
-    @staticmethod
-    def calculate_vwap(group: pd.DataFrame) -> pd.Series:
-        """Oblicza Volume Weighted Average Price (VWAP)."""
-        typical_price = (group['High'] + group['Low'] + group['Close']) / 3
-        vwap = (typical_price * group['Volume']).cumsum() / group['Volume'].cumsum()
-        return vwap
-
-    @staticmethod
-    def remove_outliers(df: pd.DataFrame, column: str, threshold: float = 3) -> pd.DataFrame:
-        """Usuwa wartości odstające na podstawie z-score."""
-        z_scores = (df[column] - df[column].mean()) / df[column].std()
-        return df[abs(z_scores) < threshold]
-
-    def add_features(self, df: pd.DataFrame, sectors_list=None) -> pd.DataFrame:
-        """Dodaje nowe cechy do ramki danych z grupowaniem po Ticker."""
-        df = df.copy()
-        df['Date'] = pd.to_datetime(df['Date'], utc=True)
-
-        def apply_features(group):
-            group = group.sort_values('Date')
-
-            # Podstawowe średnie kroczące
-            group['MA10'] = group['Close'].rolling(window=10).mean()
-            group['MA50'] = group['Close'].rolling(window=50).mean()
-            
-            # Bollinger Bands
-            group['BB_upper'] = group['Close'].rolling(window=20).mean() + 2 * group['Close'].rolling(window=20).std()
-            group['BB_lower'] = group['Close'].rolling(window=20).mean() - 2 * group['Close'].rolling(window=20).std()
-            group['BB_width'] = group['BB_upper'] - group['BB_lower']
-            group['Close_to_BB_upper'] = group['Close'] / group['BB_upper']
-            group['Close_to_BB_lower'] = group['Close'] / group['BB_lower']
-
-            # Wskaźniki techniczne
-            group['RSI'] = self.compute_rsi(group['Close'])
-            group['MACD'], group['MACD_Signal'], group['MACD_Histogram'] = self.calculate_macd(group['Close'])
-            group['Stochastic_K'] = self.calculate_stochastic_k(group)
-            group['Stochastic_D'] = group['Stochastic_K'].rolling(window=3).mean()
-            group['TR'] = self.calculate_true_range(group)
-            group['ATR'] = group['TR'].rolling(window=14).mean()
-            group['OBV'] = self.calculate_obv(group)
-            group['ADX'] = self.calculate_adx(group)
-            group['CCI'] = self.calculate_cci(group)
-            group['Tenkan_sen'], group['Kijun_sen'], group['Senkou_Span_A'], group['Senkou_Span_B'] = self.calculate_ichimoku(group)
-            group['ROC'] = self.calculate_roc(group['Close'])
-            group['VWAP'] = self.calculate_vwap(group)
-
-            # Dodatkowe cechy
-            group['Momentum_20d'] = group['Close'] - group['Close'].shift(20)
-            group['Close_to_MA_ratio'] = group['Close'] / group['MA50']
-            group['Relative_Returns'] = group['Close'].pct_change()
-            group['Log_Returns'] = np.log1p(group['Relative_Returns'])
-            group['Future_Volume'] = group['Volume'].shift(-1)
-            group['Future_Volatility'] = group['Relative_Returns'].rolling(window=5).std().shift(-1)
-
-            group['Month'] = group['Date'].dt.month.astype(str)
-            group['Day_of_Week'] = group['Date'].dt.dayofweek.astype(str)
-
-            # Wypełnianie brakujących wartości dla Relative_Returns
-            nan_count = group['Relative_Returns'].isna().sum()
-            if nan_count > 0:
-                group['Relative_Returns'] = group['Relative_Returns'].fillna(0)
-            
-            # Wypełnianie brakujących wartości dla innych cech
-            features_to_fill = [
-                'MA10', 'MA50', 'BB_upper', 'BB_lower', 'BB_width', 'Close_to_BB_upper', 'Close_to_BB_lower',
-                'RSI', 'MACD', 'MACD_Signal', 'MACD_Histogram', 'Stochastic_K', 'Stochastic_D', 'TR', 'ATR',
-                'OBV', 'ADX', 'CCI', 'Tenkan_sen', 'Kijun_sen', 'Senkou_Span_A', 'Senkou_Span_B', 'ROC',
-                'Momentum_20d', 'Close_to_MA_ratio', 'Log_Returns', 'Future_Volume', 'Future_Volatility'
-            ]
-            for feature in features_to_fill:
-                if feature in group.columns and group[feature].isna().any():
-                    nan_count = group[feature].isna().sum()
-                    group[feature] = group[feature].ffill().bfill()
-
-            return group
-
-        # Grupowanie po Ticker i stosowanie cech
-        df = df.groupby('Ticker').apply(apply_features).reset_index(drop=True)
-        df = df.dropna(subset=['Close', 'Open', 'High', 'Low', 'Volume'])
-
-        # Upewnij się, że Sector jest kategoryczny
-        if sectors_list is not None:
-            df['Sector'] = pd.Categorical(df['Sector'], categories=sectors_list, ordered=False)
-            logger.info(f"Kategorie sektorów: {df['Sector'].cat.categories.tolist()}")
-
-        # Logowanie brakujących danych w innych kolumnach
-        for col in df.columns:
-            if col not in ['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 'Ticker', 'Sector'] and df[col].isna().any():
-                logger.warning(f"Kolumna {col} zawiera wartości NaN dla tickera {df['Ticker'].iloc[0] if 'Ticker' in df else 'nieznany'} (liczba NaN: {df[col].isna().sum()})")
-
-        return df
-
 class DataPreprocessor:
-    """Klasa odpowiedzialna za preprocessing danych giełdowych i tworzenie zbioru danych TimeSeriesDataSet."""
-    
     def __init__(self, config: dict):
+        """Inicjalizuje DataPreprocessor z konfiguracją."""
         self.config = config
-        self.feature_engineer = FeatureEngineer()
         self.model_name = config['model_name']
-        self.processed_data_path = Path(config['data']['processed_data_path'])
+        self.config_manager = ConfigManager()
         self.day_of_week_categories = [str(i) for i in range(7)]
-        self.config_manager = ConfigManager()  # Dodano ConfigManager
+        self.train_processed_df_path = Path(config['data']['train_processed_df_path'])
+        self.val_processed_df_path = Path(config['data']['val_processed_df_path'])
+        self.processed_data_path = Path(config['data']['processed_data_path'])
+        self.gap_days = 10  # Stała wartość gap, można dodać do config jeśli potrzeba
 
-    def preprocess_data(self, df: pd.DataFrame) -> TimeSeriesDataSet:
-        if df.empty:
-            raise ValueError("Ramka danych jest pusta. Sprawdź dane wejściowe.")
+    def _split_with_gap(self, df: pd.DataFrame) -> tuple:
+        """Dzieli dane na train i val z gap'em 10 dni per ticker."""
+        def split_group(group):
+            group = group.sort_values('Date')
+            total_days = (group['Date'].max() - group['Date'].min()).days
+            train_days = int(0.8 * total_days)
+            split_date = group['Date'].min() + pd.Timedelta(days=train_days)
+            train = group[group['Date'] <= split_date]
+            val_start_date = split_date + pd.Timedelta(days=self.gap_days + 1)
+            val = group[group['Date'] >= val_start_date]
+            return train, val
 
-        sectors_list = self.config['model']['sectors']
-        df = self.feature_engineer.add_features(df, sectors_list=sectors_list)
-        df = df.dropna(subset=['Close', 'Open', 'High', 'Low', 'Volume'])
-        df = df[(df['Close'] > 0) & (df['High'] >= df['Low'])]
-        df = self.feature_engineer.remove_outliers(df, 'Close')
+        trains = []
+        vals = []
+        for name, group in df.groupby('Ticker'):
+            t, v = split_group(group)
+            if not t.empty:
+                trains.append(t)
+            if not v.empty:
+                vals.append(v)
 
-        # Wypełnianie NaN dla wszystkich cech numerycznych
+        train_df = pd.concat(trains).reset_index(drop=True)
+        val_df = pd.concat(vals).reset_index(drop=True)
+        return train_df, val_df
+
+    def process_data(self, mode: str = 'train', df: pd.DataFrame = None, normalizers: dict = None, ticker: str = None, historical_mode: bool = False, trim_days: int = 0):
+        """Przetwarza dane dla trybu treningu lub predykcji."""
+        start_time = time.time()
         numeric_features = [
-            "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI",
-            "MACD", "MACD_Signal", "MACD_Histogram", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
-            "ADX", "CCI", "Tenkan_sen", "Kijun_sen", "Senkou_Span_A", "Senkou_Span_B", "ROC", "VWAP",
-            "Momentum_20d", "Close_to_MA_ratio", "BB_width", "Close_to_BB_upper", "Close_to_BB_lower",
-            "Relative_Returns"
+            "Close", "Volume", "MA10", "MA50", "RSI", "MACD", "ROC", "VWAP",
+            "Momentum_20d", "Close_to_MA_ratio", "Close_to_BB_upper", "Relative_Returns"
         ]
-        for feature in numeric_features:
-            if feature in df.columns:
-                nan_count = df[feature].isna().sum()
-                if nan_count > 0:
-                    logger.warning(f"Wypełniam {nan_count} wartości NaN w kolumnie {feature} (metoda ffill/bfill)")
-                    df[feature] = df[feature].ffill().bfill().fillna(0)
 
-        df['Date'] = pd.to_datetime(df['Date'], utc=True)
-        df['time_idx'] = (df['Date'] - df['Date'].min()).dt.days.astype(int)
-        df['group_id'] = df['Ticker']
+        if mode == 'train':
+            if df is None:
+                logger.error("Brak danych wejściowych dla trybu 'train'")
+                raise ValueError("DataFrame musi być dostarczony dla trybu 'train'")
+            if historical_mode:
+                logger.warning("historical_mode=True w trybie 'train' zostanie zignorowane")
+            if trim_days > 0:
+                logger.warning("trim_days>0 w trybie 'train' zostanie zignorowane")
+        elif mode == 'predict':
+            if df is None or ticker is None:
+                logger.error("Brak danych lub tickera dla trybu 'predict'")
+                raise ValueError("DataFrame i ticker muszą być dostarczone dla trybu 'predict'")
+            if historical_mode and trim_days > 0:
+                df = df[df['Date'] >= df['Date'].max() - pd.Timedelta(days=trim_days)]
+            original_close = df['Close'].copy()
+            df['Ticker'] = ticker
+
+        feature_engineer = FeatureEngineer()
+        df = feature_engineer.add_features(df, sectors_list=self.config['model']['sectors'])
+
+        df['group_id'] = ticker if mode == 'predict' else df['Ticker']
+        df = df.sort_values(['group_id', 'Date'])
+        df['time_idx'] = df.groupby('group_id').cumcount()
 
         df['Day_of_Week'] = df['Date'].dt.dayofweek.astype(str)
+        if df['Day_of_Week'].isna().any():
+            logger.warning(f"Znaleziono NaN w Day_of_Week, wypełniam wartością '0'")
+            df['Day_of_Week'] = df['Day_of_Week'].fillna('0')
         df['Day_of_Week'] = pd.Categorical(df['Day_of_Week'], categories=self.day_of_week_categories, ordered=False)
-
-        df['Sector'] = pd.Categorical(df['Sector'], categories=sectors_list, ordered=False)
-        logger.info(f"Kategorie sektorów w preprocess_data: {df['Sector'].cat.categories.tolist()}")
-
-        numeric_features = [
-            "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI",
-            "MACD", "MACD_Signal", "MACD_Histogram", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
-            "ADX", "CCI", "Tenkan_sen", "Kijun_sen", "Senkou_Span_A", "Senkou_Span_B", "ROC", "VWAP",
-            "Momentum_20d", "Close_to_MA_ratio", "BB_width", "Close_to_BB_upper", "Close_to_BB_lower",
-            "Relative_Returns"
-        ]
-
+        
+        df['Sector'] = pd.Categorical(df['Sector'], categories=self.config['model']['sectors'], ordered=False)
+        
         log_features = [
-            "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "ATR", "BB_width",
-            "Tenkan_sen", "Kijun_sen", "Senkou_Span_A", "Senkou_Span_B", "VWAP"
+            "Close", "Volume", "MA10", "MA50", "VWAP"
         ]
         for feature in log_features:
             if feature in df.columns:
                 df[feature] = np.log1p(df[feature].clip(lower=0))
 
-        # Inicjalizacja listy valid_numeric_features
-        valid_numeric_features = []
+        # Obsługa normalizerów
+        if mode == 'train':
+            # Split na train i val z gap
+            train_df, val_df = self._split_with_gap(df)
+            if train_df.empty or val_df.empty:
+                raise ValueError(f"Zbiory po splicie są puste: train={len(train_df)}, val={len(val_df)}")
 
-        # Sprawdź, czy normalizery już istnieją
-        normalizers = self.config_manager.load_normalizers(self.model_name)
-        if normalizers:
-            logger.info(f"Normalizery już istnieją dla modelu: {self.model_name}. Pomijam tworzenie nowych normalizerów.")
-            # Utwórz listę valid_numeric_features na podstawie dostępnych normalizerów i kolumn w df
+            normalizers_path = Path(f"models/normalizers/{self.model_name}_normalizers.pkl")
+            if normalizers_path.exists():
+                normalizers = self.config_manager.load_normalizers(self.model_name)
+                logger.info(f"Załadowano istniejące normalizery dla modelu {self.model_name} – używam transform.")
+                valid_numeric_features = []
+                for feature in numeric_features:
+                    if feature in train_df.columns and feature in normalizers:
+                        try:
+                            train_df[feature] = normalizers[feature].transform(train_df[feature].values)
+                            val_df[feature] = normalizers[feature].transform(val_df[feature].values)
+                            if train_df[feature].isna().any() or np.isinf(train_df[feature]).any() or val_df[feature].isna().any() or np.isinf(val_df[feature]).any():
+                                logger.error(f"Transformacja cechy {feature} spowodowała NaN lub inf")
+                            else:
+                                valid_numeric_features.append(feature)
+                        except Exception as e:
+                            logger.error(f"Błąd podczas transformacji cechy {feature}: {e}")
+                    elif feature in train_df.columns:
+                        logger.warning(f"Cecha {feature} nie znajduje się w istniejących normalizerach, pomijam normalizację.")
+            else:
+                logger.info(f"Tworzenie nowych normalizerów i zapis dla modelu: {self.model_name}")
+                normalizers = {}
+                valid_numeric_features = []
+                for feature in numeric_features:
+                    if feature in train_df.columns:
+                        has_nan = train_df[feature].isna().any()
+                        has_inf = np.isinf(train_df[feature]).any()
+                        unique_count = train_df[feature].nunique()
+                        
+                        if has_nan or has_inf:
+                            logger.warning(f"Cecha {feature} zawiera NaN ({has_nan}) lub inf ({has_inf}), pomijam w time_varying_known_reals")
+                        elif unique_count <= 1:
+                            logger.warning(f"Cecha {feature} ma tylko {unique_count} unikalnych wartości, może powodować problemy z normalizacją")
+                            valid_numeric_features.append(feature)
+                        else:
+                            try:
+                                normalizer = TorchNormalizer()
+                                values = train_df[feature].values
+                                train_df[feature] = normalizer.fit_transform(values)
+                                normalizers[feature] = normalizer
+                                
+                                # Transform val
+                                val_df[feature] = normalizer.transform(val_df[feature].values)
+                                
+                                if train_df[feature].isna().any() or np.isinf(train_df[feature]).any() or val_df[feature].isna().any() or np.isinf(val_df[feature]).any():
+                                    logger.error(f"Normalizacja cechy {feature} spowodowała NaN lub inf, usuwam tę cechę")
+                                    del normalizers[feature]
+                                    if feature in valid_numeric_features:
+                                        valid_numeric_features.remove(feature)
+                                else:
+                                    logger.info(f"Normalizacja cechy {feature} zakończona pomyślnie: min={train_df[feature].min():.6f}, max={train_df[feature].max():.6f}")
+                                    valid_numeric_features.append(feature)
+
+                            except Exception as e:
+                                logger.error(f"Błąd podczas normalizacji cechy {feature}: {e}")
+                                if feature in valid_numeric_features:
+                                    valid_numeric_features.remove(feature)
+                    else:
+                        logger.warning(f"Cecha {feature} nie znajduje się w danych, pomijam")
+                
+                # Zapisz normalizery
+                self.config_manager.save_normalizers(self.model_name, normalizers)
+                logger.info(f"Normalizery zapisane dla modelu: {self.model_name}")
+
+            categorical_columns = ['Day_of_Week', 'Month']
+            for cat_col in categorical_columns:
+                if cat_col in train_df.columns:
+                    train_df[cat_col] = train_df[cat_col].astype(str)
+                if cat_col in val_df.columns:
+                    val_df[cat_col] = val_df[cat_col].astype(str)
+
+            # Zapisz przetworzone df
+            train_df.to_pickle(self.train_processed_df_path)
+            val_df.to_pickle(self.val_processed_df_path)
+            logger.info(f"Przetworzony train DataFrame zapisany do: {self.train_processed_df_path}")
+            logger.info(f"Przetworzony val DataFrame zapisany do: {self.val_processed_df_path}")
+
+            targets = ["Relative_Returns"]
+            valid_categorical_features = ['Day_of_Week', 'Month']
+            
+            logger.info(f"Kategorie dla Day_of_Week: {self.day_of_week_categories}")
+            logger.info(f"Kategorie dla Sector: {self.config['model']['sectors']}")
+            logger.info(f"Finalna lista cech numerycznych ({len(valid_numeric_features)}): {valid_numeric_features}")
+            logger.info(f"Finalna lista cech kategorycznych ({len(valid_categorical_features)}): {valid_categorical_features}")
+
+            # Twórz dataset dla train_df
+            train_dataset = TimeSeriesDataSet(
+                train_df,
+                time_idx="time_idx",
+                target="Relative_Returns",
+                group_ids=["group_id"],
+                min_encoder_length=self.config['model']['min_encoder_length'],
+                max_encoder_length=self.config['model']['max_encoder_length'],
+                max_prediction_length=self.config['model']['max_prediction_length'],
+                static_categoricals=["Sector"],
+                time_varying_known_categoricals=valid_categorical_features,
+                time_varying_unknown_reals=valid_numeric_features,
+                target_normalizer=normalizers.get("Relative_Returns", TorchNormalizer()),
+                allow_missing_timesteps=True,
+                add_encoder_length=False,
+                categorical_encoders={
+                    'Sector': NaNLabelEncoder(add_nan=False),
+                    'Day_of_Week': NaNLabelEncoder(add_nan=False),
+                    'Month': NaNLabelEncoder(add_nan=False)
+                }
+            )
+            
+            # Twórz dataset dla val_df 
+            val_dataset = TimeSeriesDataSet(
+                val_df,
+                time_idx="time_idx",
+                target="Relative_Returns",
+                group_ids=["group_id"],
+                min_encoder_length=self.config['model']['min_encoder_length'],
+                max_encoder_length=self.config['model']['max_encoder_length'],
+                max_prediction_length=self.config['model']['max_prediction_length'],
+                static_categoricals=["Sector"],
+                time_varying_known_categoricals=valid_categorical_features,
+                time_varying_unknown_reals=valid_numeric_features,
+                target_normalizer=normalizers.get("Relative_Returns", TorchNormalizer()),
+                allow_missing_timesteps=True,
+                add_encoder_length=False,
+                categorical_encoders={
+                    'Sector': NaNLabelEncoder(add_nan=False),
+                    'Day_of_Week': NaNLabelEncoder(add_nan=False),
+                    'Month': NaNLabelEncoder(add_nan=False)
+                }
+            )
+            
+            train_dataset.save(self.processed_data_path)
+            total_duration = time.time() - start_time
+            logger.info(f"Całkowity czas process_data (train): {total_duration:.3f} sekundy")
+            logger.info(f"Kolumny przetworzonego train_df: {train_df.columns.tolist()}")
+            return train_dataset, val_dataset
+
+        elif mode == 'predict':
+            # Użyj istniejących normalizerów
             for feature in numeric_features:
                 if feature in df.columns and feature in normalizers:
                     try:
                         df[feature] = normalizers[feature].transform(df[feature].values)
                         if df[feature].isna().any() or np.isinf(df[feature]).any():
                             logger.error(f"Transformacja cechy {feature} spowodowała NaN lub inf")
-                        else:
-                            valid_numeric_features.append(feature)
                     except Exception as e:
                         logger.error(f"Błąd podczas transformacji cechy {feature}: {e}")
-                elif feature in df.columns:
-                    logger.warning(f"Cecha {feature} nie znajduje się w normalizerach, pomijam")
-        else:
-            logger.info(f"Tworzenie nowych normalizerów i zapis dla modelu: {self.model_name}")
-            normalizers = {}
-            for feature in numeric_features:
-                if feature in df.columns:
-                    has_nan = df[feature].isna().any()
-                    has_inf = np.isinf(df[feature]).any()
-                    unique_count = df[feature].nunique()
-                    
-                    if has_nan or has_inf:
-                        logger.warning(f"Cecha {feature} zawiera NaN ({has_nan}) lub inf ({has_inf}), pomijam w time_varying_known_reals")
-                    elif unique_count <= 1:
-                        logger.warning(f"Cecha {feature} ma tylko {unique_count} unikalnych wartości, może powodować problemy z normalizacją")
-                        valid_numeric_features.append(feature)
-                    else:
-                        try:
-                            normalizer = TorchNormalizer()
-                            values = df[feature].values
-                            df[feature] = normalizer.fit_transform(values)
-                            normalizers[feature] = normalizer
-                            
-                            if df[feature].isna().any() or np.isinf(df[feature]).any():
-                                logger.error(f"Normalizacja cechy {feature} spowodowała NaN lub inf, usuwam tę cechę")
-                                del normalizers[feature]
-                                if feature in valid_numeric_features:
-                                    valid_numeric_features.remove(feature)
-                            else:
-                                logger.info(f"Normalizacja cechy {feature} zakończona pomyślnie: min={df[feature].min():.6f}, max={df[feature].max():.6f}")
-                                valid_numeric_features.append(feature)
-                            
 
-                        except Exception as e:
-                            logger.error(f"Błąd podczas normalizacji cechy {feature}: {e}")
-                            if feature in valid_numeric_features:
-                                valid_numeric_features.remove(feature)
-                else:
-                    logger.warning(f"Cecha {feature} nie znajduje się w danych, pomijam")
-            
-            # Zapisz normalizery tylko, jeśli nie istnieją
-            self.config_manager.save_normalizers(self.model_name, normalizers)
-            logger.info(f"Normalizery zapisane dla modelu: {self.model_name}")
+            categorical_columns = ['Day_of_Week', 'Month']
+            for cat_col in categorical_columns:
+                if cat_col in df.columns:
+                    df[cat_col] = df[cat_col].astype(str)
 
-        # Zastosuj istniejące lub nowo utworzone normalizery
-        for feature in numeric_features:
-            if feature in df.columns and feature in normalizers and feature not in valid_numeric_features:
-                try:
-                    df[feature] = normalizers[feature].transform(df[feature].values)
-                    if df[feature].isna().any() or np.isinf(df[feature]).any():
-                        logger.error(f"Transformacja cechy {feature} spowodowała NaN lub inf")
-                    else:
-                        valid_numeric_features.append(feature)
-                except Exception as e:
-                    logger.error(f"Błąd podczas transformacji cechy {feature}: {e}")
-
-        targets = ["Relative_Returns", "Future_Volume", "Future_Volatility"]
-        
-        categorical_features = ["Day_of_Week", "Month"]
-        valid_categorical_features = [f for f in categorical_features if f in df.columns]
-        
-        logger.info(f"Kategorie dla Day_of_Week: {self.day_of_week_categories}")
-        logger.info(f"Kategorie dla Sector: {self.config['model']['sectors']}")
-        logger.info(f"Finalna lista cech numerycznych ({len(valid_numeric_features)}): {valid_numeric_features}")
-        logger.info(f"Finalna lista cech kategorycznych ({len(valid_categorical_features)}): {valid_categorical_features}")
-
-        dataset = TimeSeriesDataSet(
-            df,
-            time_idx="time_idx",
-            target="Relative_Returns",
-            group_ids=["group_id"],
-            min_encoder_length=self.config['model']['min_encoder_length'],
-            max_encoder_length=self.config['model']['max_encoder_length'],
-            max_prediction_length=self.config['model']['max_prediction_length'],
-            static_categoricals=["Sector"],
-            time_varying_known_reals=[f for f in valid_numeric_features if f not in targets],
-            time_varying_known_categoricals=valid_categorical_features,
-            time_varying_unknown_reals=["Relative_Returns"],
-            target_normalizer=normalizers.get("Relative_Returns", TorchNormalizer()),
-            allow_missing_timesteps=True,
-            add_encoder_length=False,
-            categorical_encoders={
-                'Sector': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=False),
-                'Day_of_Week': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=False),
-                'Month': pytorch_forecasting.data.encoders.NaNLabelEncoder(add_nan=False)
-            }
-        )
-        logger.info(f"Target normalizer: {dataset.target_normalizer}")
-        
-        dataset.save(self.processed_data_path)
-        return dataset
+            total_duration = time.time() - start_time
+            logger.info(f"Całkowity czas process_data (predict): {total_duration:.3f} sekundy")
+            logger.info(f"Kolumny przetworzonego df: {df.columns.tolist()}")
+            return df, original_close

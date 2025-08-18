@@ -5,11 +5,10 @@ import asyncio
 from pathlib import Path
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
-from scipy.stats import zscore
-from sklearn.preprocessing import RobustScaler, StandardScaler
 import seaborn as sns
 import aiohttp
-import json
+import torch
+from pytorch_forecasting.data.encoders import TorchNormalizer
 
 # Dodaj katalog główny do ścieżek systemowych
 import sys
@@ -20,6 +19,7 @@ from scripts.data_fetcher import DataFetcher
 from scripts.config_manager import ConfigManager
 from scripts.preprocessor import DataPreprocessor, FeatureEngineer
 
+# Konfiguracja logowania zgodna z innymi modułami
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -34,54 +34,33 @@ class DataAnalyzer:
     """Klasa do globalnej analizy danych giełdowych pod kątem nietypowych wartości i problemów z normalizacją."""
 
     def __init__(self, config: dict, years: int = 10):
+        """Inicjalizuje DataAnalyzer z konfiguracją i liczbą lat danych."""
         self.config = config
         self.years = years
         self.config_manager = ConfigManager()
-        model_name = config['model_name']
-        normalizers_path = Path(f"models/normalizers/{model_name}_normalizers.pkl")
+        self.model_name = config['model_name']
+        normalizers_path = Path(self.config['paths']['normalizers_dir']) / f"{self.model_name}_normalizers.pkl"
         self.config['data']['normalizers_path'] = str(normalizers_path)
         logger.info(f"Ścieżka normalizerów ustawiona na: {normalizers_path}")
         self.data_fetcher = DataFetcher(self.config_manager, years=years)
         self.data_preprocessor = DataPreprocessor(self.config)
-        self.output_dir = Path('logs/debug')
+        self.feature_engineer = FeatureEngineer()
+        self.output_dir = Path(self.config['paths']['logs_dir']) / 'debug'
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        # Zaktualizowane cechy na podstawie preprocessor.py
+        # Lista cech numerycznych zgodna z preprocessor.py
         self.numeric_features = [
-            "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI",
-            "MACD", "MACD_Signal", "MACD_Histogram", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
-            "ADX", "CCI", "Tenkan_sen", "Kijun_sen", "Senkou_Span_A", "Senkou_Span_B", "ROC", "VWAP",
-            "Momentum_20d", "Close_to_MA_ratio", "BB_width", "Close_to_BB_upper", "Close_to_BB_lower",
-            "Relative_Returns", "Log_Returns", "Future_Volume", "Future_Volatility"
+            "Close", "Volume", "MA10", "MA50", "RSI", "MACD", "ROC", "VWAP",
+            "Momentum_20d", "Close_to_MA_ratio", "Close_to_BB_upper", "Relative_Returns"
         ]
         self.expected_ranges = {
             "RSI": (0, 100),
-            "Stochastic_K": (0, 100),
-            "Stochastic_D": (0, 100),
-            "ADX": (0, 100),
-            "CCI": (-200, 200),
-            "BB_width": (0, float('inf')),
-            "Future_Volatility": (0, float('inf')),
-            "ROC": (-100, 100),
-            "Momentum_20d": (float('-inf'), float('inf')),
-            "ATR": (0, float('inf')),
-            "OBV": (float('-inf'), float('inf')),
             "MACD": (float('-inf'), float('inf')),
-            "MACD_Signal": (float('-inf'), float('inf')),
-            "MACD_Histogram": (float('-inf'), float('inf')),
-            "Tenkan_sen": (float('-inf'), float('inf')),
-            "Kijun_sen": (float('-inf'), float('inf')),
-            "Senkou_Span_A": (float('-inf'), float('inf')),
-            "Senkou_Span_B": (float('-inf'), float('inf')),
+            "ROC": (-100, 100),
             "VWAP": (0, float('inf')),
+            "Momentum_20d": (float('-inf'), float('inf')),
             "Close_to_MA_ratio": (0, float('inf')),
             "Close_to_BB_upper": (0, float('inf')),
-            "Close_to_BB_lower": (0, float('inf')),
             "Relative_Returns": (float('-inf'), float('inf')),
-            "Log_Returns": (float('-inf'), float('inf')),
-            "Future_Volume": (0, float('inf')),
-            "Open": (0, float('inf')),
-            "High": (0, float('inf')),
-            "Low": (0, float('inf')),
             "Close": (0, float('inf')),
             "Volume": (0, float('inf')),
             "MA10": (0, float('inf')),
@@ -90,7 +69,7 @@ class DataAnalyzer:
 
     async def fetch_data(self, tickers: list) -> pd.DataFrame:
         """Pobiera dane dla podanych tickerów."""
-        end_date = datetime.now()
+        end_date = datetime.now(tz=None)  # Zgodność z data_fetcher.py (timezone-naive)
         start_date = end_date - timedelta(days=self.years * 365)
         all_data = []
         async with aiohttp.ClientSession() as session:
@@ -101,7 +80,11 @@ class DataAnalyzer:
                     all_data.append(result)
                 else:
                     logger.warning(f"Brak danych lub błąd dla tickera {ticker}")
-        return pd.concat(all_data, ignore_index=True) if all_data else pd.DataFrame()
+        df = pd.concat(all_data, ignore_index=True) if all_data else pd.DataFrame()
+        if not df.empty:
+            df['Sector'] = pd.Categorical(df['Sector'], categories=self.config['model']['sectors'], ordered=False)
+            logger.info(f"Pobrano dane dla {len(all_data)} tickerów, liczba wierszy: {len(df)}")
+        return df
 
     def plot_feature_distribution(self, data: pd.Series, feature: str, normalized: bool = False):
         """Tworzy histogram rozkładu cechy i zapisuje go jako PNG."""
@@ -113,31 +96,67 @@ class DataAnalyzer:
         output_path = self.output_dir / f"{feature}_{'normalized' if normalized else 'raw'}_all.png"
         plt.savefig(output_path)
         plt.close()
-        logger.info(f"Zapisano histogram dla {feature} do: {output_path}")
+        logger.info(f"Zapisano histogram dla {feature} ({'znormalizowana' if normalized else 'surowa'}) do: {output_path}")
 
     def analyze_data(self, df: pd.DataFrame):
         """Analizuje rozkład cech: zapisuje histogramy, statystyki do CSV i heatmapę korelacji."""
         logger.info("Preprocesowanie danych globalnych...")
-        df_processed = self.data_preprocessor.feature_engineer.add_features(df)
+        
+        # Dodanie cech za pomocą FeatureEngineer
+        df_processed = self.feature_engineer.add_features(df, sectors_list=self.config['model']['sectors'])
+
+        # Wczytanie normalizerów
+        normalizers = self.config_manager.load_normalizers(self.model_name)
+        df_normalized = df_processed.copy()
+
+        # Normalizacja danych
+        for feature in self.numeric_features:
+            if feature in df_normalized.columns and feature in normalizers:
+                try:
+                    df_normalized[feature] = normalizers[feature].transform(df_normalized[feature].values)
+                    if df_normalized[feature].isna().any() or np.isinf(df_normalized[feature]).any():
+                        logger.warning(f"Normalizacja cechy {feature} spowodowała NaN lub inf")
+                except Exception as e:
+                    logger.error(f"Błąd podczas normalizacji cechy {feature}: {e}")
 
         stats = []
         for feature in self.numeric_features:
             if feature in df_processed.columns:
                 feature_data = df_processed[feature].dropna()
-                # Histogram surowy
-                self.plot_feature_distribution(feature_data, feature, normalized=False)
+                feature_data_normalized = df_normalized[feature].dropna() if feature in df_normalized.columns else pd.Series()
+
+                # Histogramy dla danych surowych i znormalizowanych
+                if not feature_data.empty:
+                    self.plot_feature_distribution(feature_data, feature, normalized=False)
+                if not feature_data_normalized.empty:
+                    self.plot_feature_distribution(feature_data_normalized, feature, normalized=True)
+
                 # Statystyki
-                stats.append({
+                stat = {
                     'Feature': feature,
                     'NaN_count': df_processed[feature].isna().sum(),
-                    'Inf_count': np.isinf(df_processed[feature]).sum(),
+                    'Inf_count': np.isinf(df_processed[feature]).sum() if np.isinf(df_processed[feature]).any() else 0,
                     'Zero_count': (df_processed[feature] == 0).sum(),
                     'Negative_count': (df_processed[feature] < 0).sum(),
                     'Min': float(feature_data.min()) if not feature_data.empty else None,
                     'Max': float(feature_data.max()) if not feature_data.empty else None,
                     'Mean': float(feature_data.mean()) if not feature_data.empty else None,
-                    'Std': float(feature_data.std()) if not feature_data.empty else None
-                })
+                    'Std': float(feature_data.std()) if not feature_data.empty else None,
+                    'Normalized_Min': float(feature_data_normalized.min()) if not feature_data_normalized.empty else None,
+                    'Normalized_Max': float(feature_data_normalized.max()) if not feature_data_normalized.empty else None,
+                    'Normalized_Mean': float(feature_data_normalized.mean()) if not feature_data_normalized.empty else None,
+                    'Normalized_Std': float(feature_data_normalized.std()) if not feature_data_normalized.empty else None
+                }
+
+                # Sprawdzenie oczekiwanych zakresów
+                if feature in self.expected_ranges:
+                    min_val, max_val = self.expected_ranges[feature]
+                    out_of_range = ((feature_data < min_val) | (feature_data > max_val)).sum() if not feature_data.empty else 0
+                    stat['Out_of_range_count'] = out_of_range
+                    if out_of_range > 0:
+                        logger.warning(f"Cecha {feature} ma {out_of_range} wartości poza zakresem ({min_val}, {max_val})")
+
+                stats.append(stat)
 
         # Zapis statystyk do CSV
         stats_df = pd.DataFrame(stats)
@@ -145,7 +164,7 @@ class DataAnalyzer:
         stats_df.to_csv(stats_path, index=False)
         logger.info(f"Zapisano statystyki cech do: {stats_path}")
 
-        # Poprawka: wybierz tylko istniejące kolumny!
+        # Macierz korelacji
         existing_numeric_features = [f for f in self.numeric_features if f in df_processed.columns]
         numeric_df = df_processed[existing_numeric_features].dropna()
         if not numeric_df.empty:
@@ -153,8 +172,8 @@ class DataAnalyzer:
             corr_output_path = self.output_dir / "correlation_matrix_all.csv"
             correlation_matrix.to_csv(corr_output_path)
             logger.info(f"Zapisano macierz korelacji do: {corr_output_path}")
-            plt.figure(figsize=(10, 8))
-            sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm', vmin=-1, vmax=1)
+            plt.figure(figsize=(12, 10))
+            sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm', vmin=-1, vmax=1, fmt='.2f')
             plt.title("Macierz korelacji dla wszystkich tickerów")
             corr_plot_path = self.output_dir / "correlation_heatmap_all.png"
             plt.savefig(corr_plot_path)
@@ -163,21 +182,12 @@ class DataAnalyzer:
 
     async def run_analysis(self, tickers: list):
         """Uruchamia globalną analizę dla podanych tickerów."""
-        logger.info("Rozpoczynanie analizy danych...")
+        logger.info(f"Rozpoczynanie analizy danych dla {len(tickers)} tickerów...")
         df = await self.fetch_data(tickers)
         if df.empty:
             logger.error("Nie udało się pobrać danych.")
             return
-
-        # Analiza globalna
         self.analyze_data(df)
-
-    def save_results(self, results: dict, filename: str):
-        """Zapisuje wyniki analizy do pliku JSON."""
-        output_path = self.output_dir / filename
-        with open(output_path, 'w') as f:
-            json.dump(results, f, indent=2, default=str)
-        logger.info(f"Wyniki zapisane do: {output_path}")
 
 async def main():
     config_manager = ConfigManager()

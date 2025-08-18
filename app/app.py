@@ -33,6 +33,7 @@ from scripts.prediction_engine import load_data_and_model, preprocess_data, gene
 from app.config_loader import load_config, load_tickers_and_names, load_benchmark_tickers
 from app.plot_utils import create_stock_plot
 from app.benchmark_utils import create_benchmark_plot, save_benchmark_to_csv, load_benchmark_history
+from app.benchmark_utils import delete_benchmark_row  # dodaj import
 
 def clean_temp_dir(temp_dir):
     """Cleans all CSV files in the specified temporary directory."""
@@ -274,6 +275,66 @@ def main():
             format_dict[('Średnie', metric)] = '{:.2f}%'
         format_dict[('Średnie', 'MAE')] = '{:.2f}'
         st.dataframe(benchmark_history.style.format(format_dict))
+
+        # --- Zarządzanie wierszami: przyciski Usuń z potwierdzeniem ---
+        st.subheader("Zarządzanie historią (Usuń wiersz)")
+        csv_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data', 'benchmarks_history.csv')
+        if os.path.exists(csv_path):
+            df_raw = pd.read_csv(csv_path, dtype=str)
+
+            if df_raw.empty:
+                st.info("Brak zapisanej historii benchmarków.")
+            else:
+                st.caption("Usuń konkretny wiersz (po lewej przycisk, dalej wartości Date i Model_Name):")
+
+                # Inicjalizacja stanu potwierdzenia
+                if 'confirm_delete' not in st.session_state:
+                    st.session_state.confirm_delete = None
+
+                for i, row in df_raw.iterrows():
+                    cols = st.columns([0.12, 0.44, 0.44])
+                    with cols[0]:
+                        if st.button("Usuń", key=f"del_row_{i}"):
+                            st.session_state.confirm_delete = {
+                                'idx': int(i),
+                                'Date': row['Date'],
+                                'Model_Name': row['Model_Name']
+                            }
+                    with cols[1]:
+                        st.write(f"Date: {row.get('Date', '')}")
+                    with cols[2]:
+                        st.write(f"Model: {row.get('Model_Name', '')}")
+
+                    # Sekcja potwierdzenia w tej samej linii
+                    if st.session_state.confirm_delete and st.session_state.confirm_delete.get('idx') == i:
+                        confirm_cols = st.columns([0.12, 0.44, 0.44])
+                        with confirm_cols[0]:
+                            st.warning("Potwierdzić?")
+                        with confirm_cols[1]:
+                            if st.button("Tak, usuń", key=f"confirm_yes_{i}"):
+                                ok = delete_benchmark_row(
+                                    st.session_state.confirm_delete['Date'],
+                                    st.session_state.confirm_delete['Model_Name']
+                                )
+                                st.session_state.confirm_delete = None
+                                if ok:
+                                    st.success("Wiersz usunięty.")
+                                else:
+                                    st.error("Nie udało się usunąć wiersza.")
+                                # Odśwież widok, aby zniknął usunięty wiersz
+                                try:
+                                    st.rerun()
+                                except Exception:
+                                    st.experimental_rerun()
+                        with confirm_cols[2]:
+                            if st.button("Anuluj", key=f"confirm_no_{i}"):
+                                st.session_state.confirm_delete = None
+                                try:
+                                    st.rerun()
+                                except Exception:
+                                    st.experimental_rerun()
+        else:
+            st.info("Plik historii nie istnieje. Wygeneruj benchmark, aby utworzyć historię.")
 
 if __name__ == "__main__":
     main()

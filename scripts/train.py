@@ -44,7 +44,7 @@ class CustomModelCheckpoint(pl.callbacks.Callback):
             torch.save(checkpoint, self.save_path)
 
 def objective(trial, train_dataset: TimeSeriesDataSet, val_dataset: TimeSeriesDataSet, config: dict):
-    model = build_model(train_dataset, config, trial)
+    model = build_model(train_dataset, config, trial)  # Używamy train_dataset
     trainer = pl.Trainer(
         max_epochs=config['training']['max_epochs'],
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
@@ -72,129 +72,48 @@ def objective(trial, train_dataset: TimeSeriesDataSet, val_dataset: TimeSeriesDa
     ), val_dataloaders=val_dataloader)
     return trainer.callback_metrics["val_loss"].item()
 
-def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = True, continue_training: bool = False, new_lr: float = None):
+def train_model(dataset: tuple, config: dict, use_optuna: bool = True, continue_training: bool = False, new_lr: float = None):
     logger.info("Rozpoczynanie treningu modelu...")
     
-    # Pobierz dane z raw_data_path i odfiltruj tylko wybrane tickery
-    df = pd.read_csv(config['data']['raw_data_path'])
-    selected_tickers = config['data']['tickers']
-    df = df[df['Ticker'].isin(selected_tickers)]
-    if df.empty:
-        raise ValueError(f"Brak danych dla wybranych tickerów: {selected_tickers}")
+    # Rozpakuj krotkę dataset na train_dataset i val_dataset
+    train_dataset, val_dataset = dataset
     
-    preprocessor = DataPreprocessor(config)
-    df = preprocessor.feature_engineer.add_features(df)
-    df = df.dropna(subset=['Close', 'Open', 'High', 'Low', 'Volume'])
-    df = df[(df['Close'] > 0) & (df['High'] >= df['Low'])]
-    df['Date'] = pd.to_datetime(df['Date'], utc=True)
-    df['time_idx'] = (df['Date'] - df['Date'].min()).dt.days.astype(int)
-    df['group_id'] = df['Ticker']
+    # Ładuj przetworzone train_df i val_df
+    train_processed_df_path = Path(config['data']['train_processed_df_path'])
+    val_processed_df_path = Path(config['data']['val_processed_df_path'])
+    
+    if not train_processed_df_path.exists() or not val_processed_df_path.exists():
+        raise FileNotFoundError(f"Przetworzone DataFrame train/val nie istnieją w {train_processed_df_path} lub {val_processed_df_path}")
+    
+    train_df = pd.read_pickle(train_processed_df_path)
+    val_df = pd.read_pickle(val_processed_df_path)
+    
+    logger.info(f"Wczytano przetworzony train DataFrame z {train_processed_df_path}, długość: {len(train_df)}")
+    logger.info(f"Wczytano przetworzony val DataFrame z {val_processed_df_path}, długość: {len(val_df)}")
+    
+    if train_df.empty or val_df.empty:
+        raise ValueError("Przetworzone DataFrame train/val są puste")
     
     # Upewnij się, że Sector i Day_of_Week są kategoryczne
-    df['Sector'] = pd.Categorical(df['Sector'], categories=config['model']['sectors'], ordered=False)
-    df['Day_of_Week'] = pd.Categorical(df['Day_of_Week'], categories=[str(i) for i in range(7)], ordered=False)
-    logger.info(f"Kategorie sektorów w train.py: {df['Sector'].cat.categories.tolist()}")
-    logger.info(f"Kategorie dni tygodnia w train.py: {df['Day_of_Week'].cat.categories.tolist()}")
+    train_df['Sector'] = pd.Categorical(train_df['Sector'], categories=config['model']['sectors'], ordered=False)
+    train_df['Day_of_Week'] = pd.Categorical(train_df['Day_of_Week'], categories=[str(i) for i in range(7)], ordered=False)
+    val_df['Sector'] = pd.Categorical(val_df['Sector'], categories=config['model']['sectors'], ordered=False)
+    val_df['Day_of_Week'] = pd.Categorical(val_df['Day_of_Week'], categories=[str(i) for i in range(7)], ordered=False)
     
-    # Wczytaj normalizery
-    normalizers_path = Path(config['paths']['models_dir']) / 'normalizers' / f"{config['model_name']}_normalizers.pkl"
-    with open(normalizers_path, 'rb') as f:
-        normalizers = pickle.load(f)
-    logger.info(f"Wczytano normalizery z: {normalizers_path}")
+    logger.info(f"Kategorie sektorów w train.py: {train_df['Sector'].cat.categories.tolist()}")
+    logger.info(f"Kategorie dni tygodnia w train.py: {train_df['Day_of_Week'].cat.categories.tolist()}")
     
-    # Transformacja logarytmiczna
-    log_features = [
-        "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "ATR", "BB_width",
-        "Tenkan_sen", "Kijun_sen", "Senkou_Span_A", "Senkou_Span_B", "VWAP"
-    ]
-    
-    for feature in log_features:
-        if feature in df.columns:
-            df[feature] = np.log1p(df[feature].clip(lower=0))
-    
-    # Normalizacja z sprawdzeniem dostępności cech
-    numeric_features = [
-        "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI",
-        "MACD", "MACD_Signal", "MACD_Histogram", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
-        "ADX", "CCI", "Tenkan_sen", "Kijun_sen", "Senkou_Span_A", "Senkou_Span_B", "ROC", "VWAP",
-        "Momentum_20d", "Close_to_MA_ratio", "BB_width", "Close_to_BB_upper", "Close_to_BB_lower",
-        "Relative_Returns"
-    ]
-    
-    for feature in numeric_features:
-        if feature in df.columns and feature in normalizers:
-            try:
-                df[feature] = normalizers[feature].transform(df[feature].values)
-                if df[feature].isna().any() or np.isinf(df[feature]).any():
-                    logger.error(f"Transformacja cechy {feature} spowodowała NaN lub inf")
-            except Exception as e:
-                logger.error(f"Błąd transformacji cechy {feature}: {e}")
-        elif feature in df.columns:
-            logger.info(f"Pomijanie normalizacji dla cechy {feature}, ponieważ nie jest w normalizers.pkl")
-
-    for col in numeric_features:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce').astype(float)
-            nan_count = df[col].isna().sum()
-            if nan_count > 0:
-                logger.warning(f"Cecha {col} ma {nan_count} wartości NaN po konwersji")
-    
-    # Nowe zabezpieczenie: Wypełnij NaN w cechach numerycznych (ffill/bfill w ramach grupy, potem średnią jeśli potrzeba)
-    for col in numeric_features:
-        if col in df.columns and df[col].isna().any():
-            nan_count = df[col].isna().sum()
-            logger.warning(f"Wypełniam {nan_count} NaN w cesze {col} metodą ffill/bfill w ramach grupy (tickera).")
-            df[col] = df.groupby('group_id')[col].transform(lambda x: x.fillna(method='ffill').fillna(method='bfill'))
-            # Jeśli nadal NaN (np. cała grupa NaN), wypełnij globalną średnią
-            if df[col].isna().any():
-                remaining_nan = df[col].isna().sum()
-                logger.warning(f"Wciąż {remaining_nan} NaN w {col} – wypełniam globalną średnią.")
-                df[col] = df[col].fillna(df[col].mean())
-    
-    categorical_columns = ['Day_of_Week', 'Month']
-    for cat_col in categorical_columns:
-        if cat_col in df.columns:
-            if cat_col == 'Day_of_Week':
-                df[cat_col] = pd.Categorical(df[cat_col], categories=[str(i) for i in range(7)], ordered=False)
-            df[cat_col] = df[cat_col].astype(str)
-
-    # Filtracja grup z wystarczającą liczbą rekordów
+    # Filtracja grup z wystarczającą liczbą rekordów (dla train i val osobno, ale łącznie)
     min_val_records = config['model'].get('min_prediction_length', 1) + config['model'].get('min_encoder_length', 1)
+    df = pd.concat([train_df, val_df])
     group_counts = df.groupby('group_id').size().reset_index(name='count')
-    
     valid_groups = group_counts[group_counts['count'] >= min_val_records]['group_id']
+    train_df = train_df[train_df['group_id'].isin(valid_groups)]
+    val_df = val_df[val_df['group_id'].isin(valid_groups)]
     
-    df = df[df['group_id'].isin(valid_groups)]
-    train_df = df[df['time_idx'] <= int(df['time_idx'].max() * 0.8)]
-    val_df = df[df['time_idx'] > int(df['time_idx'].max() * 0.8)]
+    if train_df.empty or val_df.empty:
+        raise ValueError(f"Zbiory danych są puste po filtrowaniu: train_df={len(train_df)}, val_df={len(val_df)}")
     
-    if df.empty or train_df.empty or val_df.empty:
-        raise ValueError(f"Zbiory danych są puste po filtrowaniu: df={len(df)}, train_df={len(train_df)}, val_df={len(val_df)}")
-
-    logger.info(f"max_time_idx: {df['time_idx'].max()}, split_idx: {int(df['time_idx'].max() * 0.8)}")
-
-    # Tworzenie datasetów treningowego i walidacyjnego
-    train_dataset = TimeSeriesDataSet.from_parameters(
-        dataset.get_parameters(),
-        train_df,
-        static_categoricals=["Sector"], 
-        categorical_encoders={
-            'Sector': NaNLabelEncoder(add_nan=False),
-            'Day_of_Week': NaNLabelEncoder(add_nan=False),
-            'Month': NaNLabelEncoder(add_nan=False)
-        }
-    )
-    val_dataset = TimeSeriesDataSet.from_parameters(
-        dataset.get_parameters(),
-        val_df,
-        static_categoricals=["Sector"], 
-        categorical_encoders={
-            'Sector': NaNLabelEncoder(add_nan=False),
-            'Day_of_Week': NaNLabelEncoder(add_nan=False),
-            'Month': NaNLabelEncoder(add_nan=False)
-        }
-    )
-
     if len(val_dataset) == 0 or len(train_dataset) == 0:
         raise ValueError(f"Zbiory danych są puste: train_dataset={len(train_dataset)}, val_dataset={len(val_dataset)}")
 
@@ -225,7 +144,7 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
             hyperparams['learning_rate'] = new_lr
             logger.info(f"Zmieniono learning rate na {new_lr} dla kontynuacji treningu.")
         
-        final_model = build_model(dataset, config, hyperparams=hyperparams)
+        final_model = build_model(train_dataset, config, hyperparams=hyperparams)  # Używamy train_dataset
         try:
             final_model.load_state_dict(checkpoint["state_dict"])
             final_model.to(device)
@@ -236,7 +155,7 @@ def train_model(dataset: TimeSeriesDataSet, config: dict, use_optuna: bool = Tru
             raise
     else:
         logger.info("Brak modelu lub kontynuacja wyłączona, trenowanie od zera")
-        final_model = build_model(dataset, config, hyperparams=best_params)
+        final_model = build_model(train_dataset, config, hyperparams=best_params)  # Używamy train_dataset
 
     trainer = pl.Trainer(
         max_epochs=config['training']['max_epochs'],

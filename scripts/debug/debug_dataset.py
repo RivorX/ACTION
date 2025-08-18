@@ -16,7 +16,7 @@ ALL_SECTORS = [
     'Real Estate', 'Unknown'
 ]
 
-def debug_dataset(dataset_path: str = "data/processed_dataset.pt"):
+def debug_dataset(dataset_path: str = "data/train/processed_dataset.pt"):
     """
     Skrypt debugujący dla pliku processed_dataset.pt.
     Sprawdza zawartość datasetu, jego atrybuty oraz szczegóły zmiennych statycznych i kategorycznych.
@@ -144,7 +144,7 @@ def debug_dataset(dataset_path: str = "data/processed_dataset.pt"):
         raise
 
 if __name__ == "__main__":
-    dataset_path = "data/processed_dataset.pt"
+    dataset_path = "data/train/processed_dataset.pt"
     logger.info("Uruchamianie skryptu debugującego...")
     debug_dataset(dataset_path)
     logger.info("Debugowanie zakończone.")

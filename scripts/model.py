@@ -11,9 +11,13 @@ import numpy as np
 import sys
 import os
 import time
+import matplotlib.pyplot as plt
+
 # Dodaj katalog główny do ścieżek systemowych
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 from scripts.config_manager import ConfigManager 
+from scripts.utils.model_config import ModelConfig, HyperparamFactory
+from scripts.utils.validation_utils import log_validation_details, create_validation_plot, convert_to_prices
 
 # Konfiguracja logowania
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -41,79 +45,6 @@ def sanitize_tensor(tensor: torch.Tensor, fill_value: float = 0.0) -> torch.Tens
         return torch.nan_to_num(tensor, nan=fill_value, posinf=fill_value, neginf=fill_value)
     return tensor
 
-class ModelConfig:
-    """Klasa zarządzająca konfiguracją modelu."""
-    def __init__(self, config: Dict[str, Any]):
-        self.config = config
-        self.use_quantile_loss = config['model'].get('use_quantile_loss', False)
-        self.quantiles = config['model'].get('quantiles', [0.1, 0.5, 0.9]) if self.use_quantile_loss else None
-        # Pobieranie embedding_sizes z konfiguracji
-        self.embedding_sizes = config['model']['embedding_sizes']
-        self.default_hyperparams = self._get_default_hyperparams()
-
-    def _get_default_hyperparams(self) -> Dict[str, Any]:
-        """Tworzy domyślne hiperparametry na podstawie konfiguracji."""
-        return {
-            "hidden_size": self.config['model']['hidden_size'],
-            "lstm_layers": self.config['model']['lstm_layers'],
-            "attention_head_size": self.config['model']['attention_head_size'],
-            "dropout": self.config['model']['dropout'],
-            "hidden_continuous_size": self.config['model']['hidden_size'] // 2,
-            "output_size": len(self.quantiles) if self.use_quantile_loss else 1,
-            "loss": QuantileLoss(quantiles=self.quantiles) if self.use_quantile_loss else MAE(),
-            "log_interval": 10,
-            "reduce_on_plateau_patience": self.config['training']['early_stopping_patience'],
-            "learning_rate": self.config['model']['learning_rate'],
-            "embedding_sizes": self.embedding_sizes
-        }
-
-    def get_filtered_params(self, hyperparams: Dict[str, Any]) -> Dict[str, Any]:
-        """Filtruje parametry do przekazania do TemporalFusionTransformer."""
-        valid_keys = [
-            "hidden_size", "lstm_layers", "attention_head_size", "dropout", "hidden_continuous_size",
-            "output_size", "loss", "log_interval", "reduce_on_plateau_patience", "learning_rate",
-            "embedding_sizes"
-        ]
-        return {k: v for k, v in hyperparams.items() if k in valid_keys}
-
-class HyperparamFactory:
-    """Klasa do generowania hiperparametrów na podstawie różnych źródeł."""
-    @staticmethod
-    def from_trial(trial, config: ModelConfig) -> Dict[str, Any]:
-        """Generuje hiperparametry z trialu Optuna."""
-        tuning_config = config.config['training']['tuning']
-        return {
-            "hidden_size": trial.suggest_int("hidden_size", tuning_config['min_hidden_size'], tuning_config['max_hidden_size']),
-            "learning_rate": trial.suggest_float("learning_rate", tuning_config['min_learning_rate'], tuning_config['max_learning_rate'], log=True),
-            "attention_head_size": trial.suggest_int("attention_head_size", tuning_config['min_attention_head_size'], tuning_config['max_attention_head_size']),
-            "dropout": trial.suggest_float("dropout", tuning_config['min_dropout'], tuning_config['max_dropout']),
-            "lstm_layers": trial.suggest_int("lstm_layers", tuning_config['min_lstm_layers'], tuning_config['max_lstm_layers']),
-            "hidden_continuous_size": trial.suggest_int("hidden_continuous_size", tuning_config['min_hidden_continuous_size'], tuning_config['max_hidden_continuous_size']),
-            "output_size": len(config.quantiles) if config.use_quantile_loss else 1,
-            "loss": QuantileLoss(quantiles=config.quantiles) if config.use_quantile_loss else MAE(),
-            "log_interval": 10,
-            "reduce_on_plateau_patience": config.config['training']['early_stopping_patience'],
-            "embedding_sizes": config.embedding_sizes
-        }
-
-    @staticmethod
-    def from_checkpoint(hyperparams: Dict[str, Any], config: ModelConfig) -> Dict[str, Any]:
-        """Generuje hiperparametry z checkpointu, uzupełniając brakujące wartości."""
-        required_keys = [
-            "hidden_size", "learning_rate", "attention_head_size", "dropout",
-            "lstm_layers", "hidden_continuous_size", "output_size",
-            "log_interval", "reduce_on_plateau_patience", "embedding_sizes"
-        ]
-        filtered_hyperparams = {}
-        for key in required_keys:
-            if key in hyperparams:
-                filtered_hyperparams[key] = hyperparams[key]
-            else:
-                logger.warning(f"Brak klucza {key} w hiperparametrach, używam wartości domyślnej")
-                filtered_hyperparams[key] = config.default_hyperparams[key]
-        filtered_hyperparams['loss'] = config.default_hyperparams['loss']
-        return filtered_hyperparams
-
 class CustomTemporalFusionTransformer(LightningModule):
     def __init__(self, dataset, config: Dict[str, Any], hyperparams: Optional[Dict[str, Any]] = None):
         super().__init__()
@@ -128,6 +59,10 @@ class CustomTemporalFusionTransformer(LightningModule):
         self.val_batch_count = 0
         self.enable_detailed_validation = config['validation']['enable_detailed_validation']
         self.max_val_batches_to_log = config['validation']['max_validation_batches_to_log']
+        self.save_plots = config['validation']['save_plots']  # Pobieranie przełącznika zapisu wykresów
+        self.max_plots_per_epoch = config['validation']['max_plots_per_epoch']  # Maksymalna liczba wykresów na epokę
+        self.logs_dir = config['paths']['logs_dir']  # Ścieżka do katalogu logów
+        self.plot_count = 0  # Licznik wykresów w danej epoce
 
     def _load_normalizers(self):
         """Wczytuje normalizery za pomocą ConfigManager."""
@@ -278,142 +213,40 @@ class CustomTemporalFusionTransformer(LightningModule):
         except Exception as e:
             logger.warning(f"Nie można obliczyć l2_norm: {e}")
         
-        if stage == 'val' and self.enable_detailed_validation and self.val_batch_count < self.max_val_batches_to_log:
-            try:
-                self._log_validation_details(x, y_hat, y_target, batch_idx)
-                self.val_batch_count += 1
-            except Exception as e:
-                logger.error(f"Błąd w logowaniu szczegółów walidacji: {e}")
-        
         if stage == 'val':
-            return {
-                'val_loss': loss,
-                'val_l2_norm': torch.tensor(l2_norm, device=self.device),
-                'val_directional_accuracy': directional_accuracy,
-                'val_mape': mape,
-            }
+            # Szczegółowe logowanie walidacji (tylko jeśli włączone)
+            if self.enable_detailed_validation and self.val_batch_count < self.max_val_batches_to_log:
+                try:
+                    log_validation_details(
+                        x, y_hat, y_target, batch_idx,
+                        self.normalizers, self.dataset,
+                        self.save_plots, self.plot_count, self.max_plots_per_epoch,
+                        self.logs_dir, self.current_epoch
+                    )
+                    self.val_batch_count += 1
+                except Exception as e:
+                    logger.error(f"Błąd w logowaniu szczegółów walidacji: {e}")
+            # Generowanie wykresów niezależnie od enable_detailed_validation
+            if self.save_plots and self.plot_count < self.max_plots_per_epoch:
+                try:
+                    relative_returns_normalizer = self.normalizers.get('Relative_Returns') or self.dataset.target_normalizer
+                    if relative_returns_normalizer:
+                        y_hat_denorm = relative_returns_normalizer.inverse_transform(y_hat.float().cpu())
+                        y_target_denorm = relative_returns_normalizer.inverse_transform(y_target.float().cpu())
+                        create_validation_plot(
+                            y_hat_denorm, y_target_denorm, batch_idx,
+                            self.logs_dir, self.current_epoch
+                        )
+                        self.plot_count += 1
+                    else:
+                        logger.warning("Brak normalizera dla 'Relative_Returns' do wykresu")
+                except Exception as e:
+                    logger.error(f"Błąd podczas tworzenia wykresu walidacyjnego: {e}")
         
         return loss
     
-    def _log_validation_details(self, x, y_hat, y_target, batch_idx):
-            """Wydzielona funkcja do logowania szczegółów walidacji."""
-            # Denormalizacja y_hat i y_target (Relative Returns)
-            relative_returns_normalizer = self.normalizers.get('Relative_Returns') or self.dataset.target_normalizer
-            if relative_returns_normalizer:
-                try:
-                    # Przeniesienie na CPU i konwersja na float32 przed denormalizacją
-                    y_hat_denorm = relative_returns_normalizer.inverse_transform(y_hat.float().cpu())
-                    y_target_denorm = relative_returns_normalizer.inverse_transform(y_target.float().cpu())
-                    
-                    # KONWERSJA RELATIVE RETURNS NA RZECZYWISTE CENY
-                    if 'encoder_cont' in x:
-                        encoder_cont = x['encoder_cont'][0].cpu()  # Pierwszy przykład z batcha
-                        close_normalizer = self.normalizers.get('Close')
-                        if close_normalizer is not None:
-                            try:
-                                # Znajdź pozycję Close w numeric_features
-                                numeric_features = [
-                                    "Open", "High", "Low", "Close", "Volume", "MA10", "MA50", "RSI", "Volatility",
-                                    "MACD", "MACD_Signal", "Stochastic_K", "Stochastic_D", "ATR", "OBV",
-                                    "Close_momentum_1d", "Close_momentum_5d", "Close_vs_MA10", "Close_vs_MA50",
-                                    "Close_percentile_20d", "Close_volatility_5d", "Close_RSI_divergence"
-                                ]
-                                close_idx = numeric_features.index("Close") if "Close" in numeric_features else None
-                                
-                                if close_idx is not None:
-                                    # Pobierz ostatnią wartość Close z encodera
-                                    last_close_norm = encoder_cont[-1, close_idx]
-                                    last_close_denorm = close_normalizer.inverse_transform(torch.tensor([[last_close_norm]]))
-                                    last_close_price = np.expm1(last_close_denorm.numpy())[0, 0]
-                                    
-                                    # Sprawdź rozsądność ceny
-                                    if last_close_price > 10000:
-                                        logger.warning(f"Bardzo wysoka cena Close: {last_close_price:.2f}")
-                                        last_close_price_alt = last_close_denorm.numpy()[0, 0]
-                                        if 10 <= last_close_price_alt <= 1000:
-                                            last_close_price = last_close_price_alt
-                                    
-                                    logger.info(f"Ostatnia cena Close z batcha: {last_close_price:.2f}")
-                                    
-                                    # Konwertuj tylko pierwsze 5 predykcji dla czytelności
-                                    self._convert_to_prices(y_hat_denorm, y_target_denorm, last_close_price, batch_idx)
-                                else:
-                                    logger.warning("Nie można znaleźć indeksu kolumny Close")
-                            except Exception as e:
-                                logger.error(f"Błąd podczas konwersji na rzeczywiste ceny: {e}")
-                        else:
-                            logger.warning("Brak normalizera dla Close")
-                    else:
-                        logger.warning("Brak danych encoder_cont w batchu")
-                        
-                except Exception as e:
-                    logger.error(f"Błąd podczas denormalizacji Relative Returns: {e}")
-            else:
-                logger.warning("Brak normalizera dla 'Relative_Returns'")
-
-    def _convert_to_prices(self, y_hat_denorm, y_target_denorm, last_close_price, batch_idx):
-        def to_scalar(tensor_val):
-            if hasattr(tensor_val, 'numel') and tensor_val.numel() == 1:
-                return tensor_val.item()
-            elif hasattr(tensor_val, 'cpu'):
-                val = tensor_val.cpu().numpy()
-                return val.item() if val.size == 1 else val.flatten()[0]
-            else:
-                return float(tensor_val)
-        
-        y_hat_prices = []
-        y_target_prices = []
-        current_price_pred = last_close_price
-        current_price_target = last_close_price
-        
-        for i in range(min(5, y_hat_denorm.shape[1])):
-            if y_hat_denorm.dim() == 3:
-                relative_return_pred = to_scalar(y_hat_denorm[0, i, 1])
-                relative_return_pred_lower = to_scalar(y_hat_denorm[0, i, 0])
-                relative_return_pred_upper = to_scalar(y_hat_denorm[0, i, 2])
-            else:
-                logger.warning(f"y_hat_denorm ma nieoczekiwany kształt: {y_hat_denorm.shape}")
-                relative_return_pred = to_scalar(y_hat_denorm[0, i])
-                relative_return_pred_lower = relative_return_pred
-                relative_return_pred_upper = relative_return_pred
-            
-            next_price_pred = current_price_pred * (1 + relative_return_pred)
-            next_price_pred_lower = current_price_pred * (1 + relative_return_pred_lower)
-            next_price_pred_upper = current_price_pred * (1 + relative_return_pred_upper)
-            
-            y_hat_prices.append({
-                'median': next_price_pred,
-                'lower': next_price_pred_lower,
-                'upper': next_price_pred_upper
-            })
-            current_price_pred = next_price_pred
-            
-            relative_return_target = to_scalar(y_target_denorm[0, i])
-            next_price_target = current_price_target * (1 + relative_return_target)
-            y_target_prices.append(next_price_target)
-            current_price_target = next_price_target
-        
-        pred_medians = [f"{p['median']:.2f}" for p in y_hat_prices]
-        pred_lowers = [f"{p['lower']:.2f}" for p in y_hat_prices]
-        pred_uppers = [f"{p['upper']:.2f}" for p in y_hat_prices]
-        target_prices_formatted = [f"{p:.2f}" for p in y_target_prices]
-        
-        logger.info(
-            f"Validation batch {batch_idx} - RZECZYWISTE CENY:\n"
-            f"  Predykcje (mediana): {pred_medians}\n"
-            f"  Predykcje (dolny 10%): {pred_lowers}\n"
-            f"  Predykcje (górny 90%): {pred_uppers}\n"
-            f"  Rzeczywiste ceny: {target_prices_formatted}"
-        )
-
-    def training_step(self, batch: Tuple[Dict[str, torch.Tensor], List[torch.Tensor]], batch_idx: int) -> torch.Tensor:
-        return self._shared_step(batch, batch_idx, 'train')
-
-    def validation_step(self, batch: Tuple[Dict[str, torch.Tensor], List[torch.Tensor]], batch_idx: int) -> torch.Tensor:
-        return self._shared_step(batch, batch_idx, 'val')
-
     def on_validation_epoch_end(self) -> None:
-        """Loguje val_l2_norm i learning_rate na końcu każdej epoki walidacyjnej."""
+        """Loguje val_l2_norm i learning_rate na końcu każdej epoki walidacyjnej oraz resetuje licznik wykresów."""
         val_l2_norm = self.trainer.callback_metrics.get("val_l2_norm", None)
         if val_l2_norm is not None:
             logger.info(f"Validation epoch end: val_l2_norm = {val_l2_norm:.4f}")
@@ -427,6 +260,7 @@ class CustomTemporalFusionTransformer(LightningModule):
         else:
             logger.warning("Optimizer nie jest dostępny, brak learning_rate")
         self.val_batch_count = 0
+        self.plot_count = 0  # Resetowanie licznika wykresów na końcu epoki
 
     def configure_optimizers(self) -> Dict[str, Any]:
         """Konfiguruje optymalizator i scheduler."""
@@ -447,6 +281,18 @@ class CustomTemporalFusionTransformer(LightningModule):
             },
         }
 
+    def training_step(self, batch: Tuple[Dict[str, torch.Tensor], List[torch.Tensor]], batch_idx: int) -> torch.Tensor:
+        """
+        Metoda wymagana przez PyTorch Lightning do treningu.
+        """
+        return self._shared_step(batch, batch_idx, stage='train')
+
+    def validation_step(self, batch: Tuple[Dict[str, torch.Tensor], List[torch.Tensor]], batch_idx: int) -> torch.Tensor:
+        """
+        Metoda wymagana przez PyTorch Lightning do walidacji.
+        """
+        return self._shared_step(batch, batch_idx, stage='val')
+
 def build_model(dataset, config: Dict[str, Any], trial=None, hyperparams: Optional[Dict[str, Any]] = None) -> CustomTemporalFusionTransformer:
     """Buduje model z odpowiednimi hiperparametrami."""
     model_config = ModelConfig(config)
@@ -456,5 +302,4 @@ def build_model(dataset, config: Dict[str, Any], trial=None, hyperparams: Option
         hyperparams = HyperparamFactory.from_checkpoint(hyperparams, model_config)
     else:
         hyperparams = model_config.default_hyperparams
-    logger.info(f"Budowanie modelu z hiperparametrami: {hyperparams}")
     return CustomTemporalFusionTransformer(dataset, config, hyperparams)
