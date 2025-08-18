@@ -73,29 +73,34 @@ Dostępne są jedynie **aktualne wartości** tych wskaźników poprzez metodę `
 
 ```
 ├── app/
-│   ├── app.py              # Aplikacja Streamlit
-│   ├── benchmark_utils.py  # Funkcje do generowania benchmarku
-│   ├── config_loader.py    # Wczytywanie konfiguracji i tickerów
-│   └── plot_utils.py       # Funkcje do tworzenia wykresów
+│   ├── app.py                 # Streamlit app — UI do wyboru tickerów, wyświetlania predykcji i benchmarku
+│   ├── benchmark_utils.py     # Funkcje do wykonywania benchmarku i obliczania metryk
+│   ├── config_loader.py       # Ładowanie konfiguracji aplikacji i list tickerów
+│   └── plot_utils.py          # Funkcje generujące wykresy i wizualizacje
 ├── scripts/
-│   ├── config_manager.py   # Zarządzanie konfiguracją
-│   ├── data_fetcher.py     # Pobieranie danych giełdowych
-│   ├── model.py            # Definicja modelu
-│   ├── prediction_engine.py # Logika predykcji
-│   ├── preprocessor.py     # Przetwarzanie danych
-│   ├── train.py            # Trening modelu
-│   └── debug/              # Katalog z skryptami do debugowania
-│       ├── debug_dataset.py # Debugowanie datasetu
-│       ├── feature_importance.py # Analiza ważności cech
-│       └── transfer_weights.py # Przenoszenie wag między modelami
+│   ├── config_manager.py      # Zarządzanie konfiguracją, zapisywanie/odczyt normalizerów i modeli
+│   ├── data_fetcher.py        # Pobieranie danych giełdowych (yfinance), zapis surowych plików
+│   ├── model.py               # Definicja architektury modelu (TFT) i utilities do tworzenia modelu
+│   ├── prediction_engine.py   # Logika generowania predykcji przy użyciu wytrenowanego modelu
+│   ├── preprocessor.py        # DataPreprocessor — przygotowanie cech, normalizacja, budowa TimeSeriesDataSet
+│   ├── train.py               # Skrypt treningowy — uczenie modelu, checkpointing, logowanie metryk
+│   ├── utils/
+│   │   ├── feature_engineer.py        # Funkcje tworzące cechy techniczne i czasowe (MA, RSI, itd)
+│   │   ├── model_config.py            # Helpery do walidacji i budowy konfiguracji modelu
+│   │   ├── transfer_weights.py        # Narzędzia do przenoszenia wag między checkpointami
+│   │   └── validation_utils.py        # Metryki i funkcje walidacyjne 
+│   └── debug/
+│       ├── debug_dataset.py    # Skrypty pomocnicze do debugowania TimeSeriesDataSet i danych
+│       ├── feature_importance.py # Eksperymenty / skrypty analizy ważności cech
+│       └── transfer_weights.py  # Narzędzia do przenoszenia wag między modelami
 ├── config/
-│   ├── config.yaml         # Plik konfiguracyjny
-│   ├── tickers.yaml        # Lista tickerów
-│   ├── benchmark_tickers.yaml # Tickery do benchmarku
-│   └── company_names.yaml  # Nazwy spółek
+│   ├── config.yaml            # Główne ustawienia projektu (ścieżki, parametry modelu)
+│   ├── tickers.yaml           # Lista tickerów
+│   └── benchmark_tickers.yaml # Lista tickerów używanych w benchmarku (inne niż w treningu)
 ├── data/                   # Dane surowe i przetworzone
-├── models/                 # Zapisane modele
-├── start_training.py       # Skrypt do treningu modelu
+├── models/                 # Zapisane modele oraz normalizery
+├── docs/                   # Materiały pomocnicze (obrazy, wykresy do README)
+├── start_training.py       # Wygodny wrapper uruchamiający pełny pipeline treningowy
 ├── README.md               # Dokumentacja projektu
 └── requirements.txt        # Lista zależności
 ```
