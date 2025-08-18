@@ -148,7 +148,8 @@ async def process_ticker(ticker, full_data, config, temp_raw_data_path, max_pred
                 'MAPE': mape,
                 'MAE': mae,
                 'DirAcc': directional_accuracy
-            }
+            },
+            'last_date': last_date  # Dodajemy last_date do wyników
         }
 
     except Exception as e:
@@ -210,6 +211,9 @@ async def create_benchmark_plot(config, benchmark_tickers, historical_close_dict
         # Tworzenie wykresu
         fig = go.Figure()
         colors = ['#0000FF', '#00FF00', '#FF0000', '#800080', '#FFA500', '#00FFFF', '#FF00FF', '#FFFF00', '#A52A2A', '#808080']
+        
+        # Ustal jednolitą datę początku predykcji
+        split_date = pd.Timestamp(trim_date).tz_localize(None).isoformat()
 
         for idx, (ticker, data) in enumerate(all_results.items()):
             color_idx = idx % len(colors)
@@ -257,27 +261,27 @@ async def create_benchmark_plot(config, benchmark_tickers, historical_close_dict
                 legendgroup=ticker
             ))
 
-            split_date = pd.Timestamp(pred_dates[0]).tz_localize(None).isoformat()
-            fig.add_shape(
-                type="line",
-                x0=split_date,
-                x1=split_date,
-                y0=0,
-                y1=1,
-                xref="x",
-                yref="paper",
-                line=dict(color="red", width=2, dash="dash")
-            )
-            fig.add_annotation(
-                x=split_date,
-                y=1.05,
-                xref="x",
-                yref="paper",
-                text="Początek predykcji",
-                showarrow=False,
-                font=dict(size=12),
-                align="center"
-            )
+        # Dodaj jedną linię początku predykcji
+        fig.add_shape(
+            type="line",
+            x0=split_date,
+            x1=split_date,
+            y0=0,
+            y1=1,
+            xref="x",
+            yref="paper",
+            line=dict(color="red", width=2, dash="dash")
+        )
+        fig.add_annotation(
+            x=split_date,
+            y=1.05,
+            xref="x",
+            yref="paper",
+            text="Początek predykcji",
+            showarrow=False,
+            font=dict(size=12),
+            align="center"
+        )
 
         fig.update_layout(
             title="Porównanie predykcji z historią dla wybranych spółek",

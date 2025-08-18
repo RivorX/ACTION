@@ -16,8 +16,12 @@ from scripts.model import build_model, CustomTemporalFusionTransformer
 from scripts.preprocessor import DataPreprocessor
 from scripts.config_manager import ConfigManager
 
+# Konfiguracja logowania Pythona
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Wyłączenie logów z pytorch_lightning na poziomie INFO i WARNING
+logging.getLogger("pytorch_lightning").setLevel(logging.ERROR)
 
 async def load_data_and_model_async(config, ticker, temp_raw_data_path, historical_mode=False, trim_days=0, years=3):
     """Asynchroniczna wersja load_data_and_model z optymalizacją i logowaniem czasu."""
@@ -154,7 +158,7 @@ def generate_predictions(config, dataset, model, ticker_data):
     
     prediction_time = time.time()
     with torch.inference_mode(), torch.amp.autocast(device_type='cuda' if torch.cuda.is_available() else 'cpu', dtype=torch.float32):
-        predictions = model.predict(dataloader, mode="quantiles", return_x=True)
+        predictions = model.predict(dataloader, mode="quantiles", return_x=True, trainer_kwargs={'logger': False})
     prediction_duration = time.time() - prediction_time
     logger.info(f"Wykonywanie predykcji zajęło: {prediction_duration:.3f} sekundy")
     logger.info(f"Kształt predictions.output: {predictions.output.shape}")
