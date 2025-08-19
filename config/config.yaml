@@ -58,11 +58,13 @@ model:
 training:
   max_epochs: 100               # Maksymalna liczba epok
   batch_size: 256               # Rozmiar partii dla treningu
+  num_workers: 6                 # Liczba workerów dla DataLoadera
   early_stopping_patience: 10   # Cierpliwość dla wczesnego zatrzymania
   optuna_trials: 5              # Liczba prób dla optymalizacji hiperparametrów
   reduce_lr_patience: 3         # Cierpliwość dla redukcji współczynnika uczenia
   reduce_lr_factor: 0.6         # Czynnik redukcji współczynnika uczenia
   weight_decay: 0.13            # Współczynnik decay dla wag
+
 
 # Ustawienia predykcji
 prediction:

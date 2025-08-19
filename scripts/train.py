@@ -2,6 +2,7 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from pytorch_lightning.loggers import CSVLogger
 import torch
+import torch.backends.cudnn as cudnn
 from pytorch_forecasting import TimeSeriesDataSet, NaNLabelEncoder
 import pytorch_forecasting
 from scripts.data_fetcher import DataFetcher
@@ -18,6 +19,9 @@ from pathlib import Path
 # Konfiguracja logowania
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Wydajnościowe ustawienia CUDA/cuDNN
+cudnn.benchmark = True
 
 class CustomModelCheckpoint(pl.callbacks.Callback):
     """Niestandardowy callback do zapisywania checkpointów."""
@@ -45,6 +49,8 @@ class CustomModelCheckpoint(pl.callbacks.Callback):
 
 def objective(trial, train_dataset: TimeSeriesDataSet, val_dataset: TimeSeriesDataSet, config: dict):
     model = build_model(train_dataset, config, trial)  # Używamy train_dataset
+    num_workers = config['training']['num_workers']
+    pin_memory = torch.cuda.is_available()
     trainer = pl.Trainer(
         max_epochs=config['training']['max_epochs'],
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
@@ -58,7 +64,8 @@ def objective(trial, train_dataset: TimeSeriesDataSet, val_dataset: TimeSeriesDa
         logger=CSVLogger(save_dir="logs/")
     )
     val_dataloader = val_dataset.to_dataloader(
-        train=False, batch_size=config['training']['batch_size'], num_workers=4, persistent_workers=True
+        train=False, batch_size=config['training']['batch_size'], num_workers=num_workers,
+        persistent_workers=True, pin_memory=pin_memory
     )
     for batch in val_dataloader:
         x, y = batch
@@ -68,7 +75,8 @@ def objective(trial, train_dataset: TimeSeriesDataSet, val_dataset: TimeSeriesDa
         logger.info(f"Validation batch: y[0, :5] = {y[0][:5].tolist()}")
         break
     trainer.fit(model, train_dataloaders=train_dataset.to_dataloader(
-        train=True, batch_size=config['training']['batch_size'], num_workers=4, persistent_workers=True
+        train=True, batch_size=config['training']['batch_size'], num_workers=num_workers,
+        persistent_workers=True, pin_memory=pin_memory
     ), val_dataloaders=val_dataloader)
     return trainer.callback_metrics["val_loss"].item()
 
@@ -169,13 +177,15 @@ def train_model(dataset: tuple, config: dict, use_optuna: bool = True, continue_
         enable_progress_bar=True,
         logger=CSVLogger(save_dir="logs/")
     )
+    num_workers = config['training']['num_workers']
+    pin_memory = torch.cuda.is_available()
     trainer.fit(
         model=final_model,
         train_dataloaders=train_dataset.to_dataloader(
-            train=True, batch_size=config['training']['batch_size'], num_workers=4, persistent_workers=True
+            train=True, batch_size=config['training']['batch_size'], num_workers=num_workers, persistent_workers=True, pin_memory=pin_memory
         ),
         val_dataloaders=val_dataset.to_dataloader(
-            train=False, batch_size=config['training']['batch_size'], num_workers=4, persistent_workers=True
+            train=False, batch_size=config['training']['batch_size'], num_workers=num_workers, persistent_workers=True, pin_memory=pin_memory
         )
     )
     
