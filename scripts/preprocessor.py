@@ -1,4 +1,4 @@
-import pandas as pd
+import pandas as pd 
 import numpy as np
 from pytorch_forecasting.data import TimeSeriesDataSet
 from pytorch_forecasting.data.encoders import TorchNormalizer, NaNLabelEncoder
@@ -27,8 +27,8 @@ class DataPreprocessor:
         self.model_name = config['model_name']
         self.config_manager = ConfigManager()
         self.day_of_week_categories = [str(i) for i in range(7)]
-        self.train_processed_df_path = Path(config['data']['train_processed_df_path'])
-        self.val_processed_df_path = Path(config['data']['val_processed_df_path'])
+        self.train_processed_df_path = Path(config['data']['train_processed_df_path']).with_suffix('.parquet')
+        self.val_processed_df_path = Path(config['data']['val_processed_df_path']).with_suffix('.parquet')
         self.processed_data_path = Path(config['data']['processed_data_path'])
         self.gap_days = 10  # Stała wartość gap, można dodać do config jeśli potrzeba
 
@@ -59,7 +59,6 @@ class DataPreprocessor:
 
     def process_data(self, mode: str = 'train', df: pd.DataFrame = None, normalizers: dict = None, ticker: str = None, historical_mode: bool = False, trim_days: int = 0):
         """Przetwarza dane dla trybu treningu lub predykcji."""
-        start_time = time.time()
         numeric_features = [
             "Close", "Volume", "MA10", "MA50", "RSI", "MACD", "ROC", "VWAP",
             "Momentum_20d", "Close_to_MA_ratio", "Close_to_BB_upper", "Relative_Returns"
@@ -121,52 +120,29 @@ class DataPreprocessor:
                         try:
                             train_df[feature] = normalizers[feature].transform(train_df[feature].values)
                             val_df[feature] = normalizers[feature].transform(val_df[feature].values)
-                            if train_df[feature].isna().any() or np.isinf(train_df[feature]).any() or val_df[feature].isna().any() or np.isinf(val_df[feature]).any():
-                                logger.error(f"Transformacja cechy {feature} spowodowała NaN lub inf")
-                            else:
-                                valid_numeric_features.append(feature)
+                            logger.info(f"Transformacja cechy {feature} zakończona pomyślnie: train min={train_df[feature].min():.6f}, max={train_df[feature].max():.6f}")
+                            valid_numeric_features.append(feature)
                         except Exception as e:
                             logger.error(f"Błąd podczas transformacji cechy {feature}: {e}")
-                    elif feature in train_df.columns:
-                        logger.warning(f"Cecha {feature} nie znajduje się w istniejących normalizerach, pomijam normalizację.")
+                            if feature in valid_numeric_features:
+                                valid_numeric_features.remove(feature)
+                    else:
+                        logger.warning(f"Cecha {feature} nie znajduje się w danych lub brak normalizera, pomijam")
             else:
-                logger.info(f"Tworzenie nowych normalizerów i zapis dla modelu: {self.model_name}")
                 normalizers = {}
                 valid_numeric_features = []
                 for feature in numeric_features:
                     if feature in train_df.columns:
-                        has_nan = train_df[feature].isna().any()
-                        has_inf = np.isinf(train_df[feature]).any()
-                        unique_count = train_df[feature].nunique()
-                        
-                        if has_nan or has_inf:
-                            logger.warning(f"Cecha {feature} zawiera NaN ({has_nan}) lub inf ({has_inf}), pomijam w time_varying_known_reals")
-                        elif unique_count <= 1:
-                            logger.warning(f"Cecha {feature} ma tylko {unique_count} unikalnych wartości, może powodować problemy z normalizacją")
+                        try:
+                            normalizers[feature] = TorchNormalizer()
+                            train_df[feature] = normalizers[feature].fit_transform(train_df[feature].values)
+                            val_df[feature] = normalizers[feature].transform(val_df[feature].values)
+                            logger.info(f"Normalizacja cechy {feature} zakończona pomyślnie: min={train_df[feature].min():.6f}, max={train_df[feature].max():.6f}")
                             valid_numeric_features.append(feature)
-                        else:
-                            try:
-                                normalizer = TorchNormalizer()
-                                values = train_df[feature].values
-                                train_df[feature] = normalizer.fit_transform(values)
-                                normalizers[feature] = normalizer
-                                
-                                # Transform val
-                                val_df[feature] = normalizer.transform(val_df[feature].values)
-                                
-                                if train_df[feature].isna().any() or np.isinf(train_df[feature]).any() or val_df[feature].isna().any() or np.isinf(val_df[feature]).any():
-                                    logger.error(f"Normalizacja cechy {feature} spowodowała NaN lub inf, usuwam tę cechę")
-                                    del normalizers[feature]
-                                    if feature in valid_numeric_features:
-                                        valid_numeric_features.remove(feature)
-                                else:
-                                    logger.info(f"Normalizacja cechy {feature} zakończona pomyślnie: min={train_df[feature].min():.6f}, max={train_df[feature].max():.6f}")
-                                    valid_numeric_features.append(feature)
-
-                            except Exception as e:
-                                logger.error(f"Błąd podczas normalizacji cechy {feature}: {e}")
-                                if feature in valid_numeric_features:
-                                    valid_numeric_features.remove(feature)
+                        except Exception as e:
+                            logger.error(f"Błąd podczas normalizacji cechy {feature}: {e}")
+                            if feature in valid_numeric_features:
+                                valid_numeric_features.remove(feature)
                     else:
                         logger.warning(f"Cecha {feature} nie znajduje się w danych, pomijam")
                 
@@ -181,17 +157,15 @@ class DataPreprocessor:
                 if cat_col in val_df.columns:
                     val_df[cat_col] = val_df[cat_col].astype(str)
 
-            # Zapisz przetworzone df
-            train_df.to_pickle(self.train_processed_df_path)
-            val_df.to_pickle(self.val_processed_df_path)
+            # Zapisz przetworzone df w formacie Parquet
+            train_df.to_parquet(self.train_processed_df_path, index=False)
+            val_df.to_parquet(self.val_processed_df_path, index=False)
             logger.info(f"Przetworzony train DataFrame zapisany do: {self.train_processed_df_path}")
             logger.info(f"Przetworzony val DataFrame zapisany do: {self.val_processed_df_path}")
 
             targets = ["Relative_Returns"]
             valid_categorical_features = ['Day_of_Week', 'Month']
             
-            logger.info(f"Kategorie dla Day_of_Week: {self.day_of_week_categories}")
-            logger.info(f"Kategorie dla Sector: {self.config['model']['sectors']}")
             logger.info(f"Finalna lista cech numerycznych ({len(valid_numeric_features)}): {valid_numeric_features}")
             logger.info(f"Finalna lista cech kategorycznych ({len(valid_categorical_features)}): {valid_categorical_features}")
 
@@ -240,8 +214,6 @@ class DataPreprocessor:
             )
             
             train_dataset.save(self.processed_data_path)
-            total_duration = time.time() - start_time
-            logger.info(f"Całkowity czas process_data (train): {total_duration:.3f} sekundy")
             logger.info(f"Kolumny przetworzonego train_df: {train_df.columns.tolist()}")
             return train_dataset, val_dataset
 
@@ -261,7 +233,5 @@ class DataPreprocessor:
                 if cat_col in df.columns:
                     df[cat_col] = df[cat_col].astype(str)
 
-            total_duration = time.time() - start_time
-            logger.info(f"Całkowity czas process_data (predict): {total_duration:.3f} sekundy")
             logger.info(f"Kolumny przetworzonego df: {df.columns.tolist()}")
             return df, original_close

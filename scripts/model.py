@@ -26,6 +26,9 @@ logger = logging.getLogger(__name__)
 # Ustaw precyzję dla Tensor Cores na GPU
 torch.set_float32_matmul_precision('medium')
 
+# Dodana optymalizacja: Włącz TF32 dla szybszych matmul w mixed precision
+torch.backends.cuda.matmul.allow_tf32 = True
+
 def move_to_device(obj: Any, device: torch.device) -> Any:
     """Rekurencyjnie przenosi tensory na wskazane urządzenie asynchronicznie z non_blocking=True."""
     if isinstance(obj, torch.Tensor):
@@ -57,12 +60,13 @@ class CustomTemporalFusionTransformer(LightningModule):
         self._initialize_model(dataset)
         self._save_hyperparameters()
         self.val_batch_count = 0
-        self.enable_detailed_validation = config['validation']['enable_detailed_validation']
+        self.enable_detailed_validation = config['validation']['enable_detailed_validation'] 
         self.max_val_batches_to_log = config['validation']['max_validation_batches_to_log']
-        self.save_plots = config['validation']['save_plots']  # Pobieranie przełącznika zapisu wykresów
-        self.max_plots_per_epoch = config['validation']['max_plots_per_epoch']  # Maksymalna liczba wykresów na epokę
-        self.logs_dir = config['paths']['logs_dir']  # Ścieżka do katalogu logów
-        self.plot_count = 0  # Licznik wykresów w danej epoce
+        self.save_plots = config['validation']['save_plots']  
+        self.max_plots_per_epoch = config['validation']['max_plots_per_epoch']
+        self.logs_dir = config['paths']['logs_dir']
+        self.plot_count = 0
+        self.debug = config['validation']['debug']
 
     def _load_normalizers(self):
         """Wczytuje normalizery za pomocą ConfigManager."""
@@ -165,17 +169,19 @@ class CustomTemporalFusionTransformer(LightningModule):
         if stage == 'train' and not y_target.requires_grad:
             y_target.requires_grad_(True)
         
-        if torch.isnan(y_target).any() or torch.isinf(y_target).any():
-            logger.warning(f"NaN/Inf w y_target w batch {batch_idx}")
-            y_target = torch.nan_to_num(y_target, nan=0.0, posinf=0.0, neginf=0.0)
+        if self.debug:
+            if torch.isnan(y_target).any() or torch.isinf(y_target).any():
+                logger.warning(f"NaN/Inf w y_target w batch {batch_idx}")
+                y_target = torch.nan_to_num(y_target, nan=0.0, posinf=0.0, neginf=0.0)
         
         try:
             with torch.amp.autocast(device_type='cuda' if torch.cuda.is_available() else 'cpu', dtype=torch.bfloat16):
                 y_hat = self(x)
-                
-                if torch.isnan(y_hat).any() or torch.isinf(y_hat).any():
-                    logger.warning(f"NaN/Inf w y_hat w batch {batch_idx}")
-                    y_hat = torch.nan_to_num(y_hat, nan=0.0, posinf=0.0, neginf=0.0)
+
+                if self.debug:
+                    if torch.isnan(y_hat).any() or torch.isinf(y_hat).any():
+                        logger.warning(f"NaN/Inf w y_hat w batch {batch_idx}")
+                        y_hat = torch.nan_to_num(y_hat, nan=0.0, posinf=0.0, neginf=0.0)
                 
                 # Obliczanie straty
                 loss = self.model.loss(y_hat, y_target)
