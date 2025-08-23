@@ -65,6 +65,8 @@ training:
   reduce_lr_patience: 3         # Cierpliwość dla redukcji współczynnika uczenia
   reduce_lr_factor: 0.6         # Czynnik redukcji współczynnika uczenia
   weight_decay: 0.13            # Współczynnik decay dla wag
+  auto_batch_size: true         # Włączenie automatycznej estymacji batch size (true/false)
+  max_vram_usage: 0.8           # Maksymalny procent użycia VRAM (0.0-1.0, np. 0.8 dla 80%)
 
 
 # Ustawienia predykcji

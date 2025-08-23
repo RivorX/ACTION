@@ -9,6 +9,7 @@ from scripts.data_fetcher import DataFetcher
 from scripts.preprocessor import DataPreprocessor
 from scripts.model import build_model
 from scripts.config_manager import ConfigManager
+from scripts.utils.batch_size_estimator import estimate_batch_size
 import optuna
 import pandas as pd
 import numpy as np
@@ -49,6 +50,12 @@ class CustomModelCheckpoint(pl.callbacks.Callback):
 
 def objective(trial, train_dataset: TimeSeriesDataSet, val_dataset: TimeSeriesDataSet, config: dict):
     model = build_model(train_dataset, config, trial)
+    
+    # Estymacja batch size
+    batch_size = estimate_batch_size(model, train_dataset, config)
+    config['training']['batch_size'] = batch_size
+    logger.info(f"Ustawiono batch_size w objective na: {batch_size}")
+
     num_workers = config['training']['num_workers']
     pin_memory = torch.cuda.is_available()
     prefetch_factor = config['training']['prefetch_factor']
@@ -161,6 +168,11 @@ def train_model(dataset: tuple, config: dict, use_optuna: bool = True, continue_
     else:
         logger.info("Brak modelu lub kontynuacja wyłączona, trenowanie od zera")
         final_model = build_model(train_dataset, config, hyperparams=best_params)
+
+    # Estymacja batch size przed utworzeniem DataLoaderów
+    batch_size = estimate_batch_size(final_model, train_dataset, config)
+    config['training']['batch_size'] = batch_size  # Zaktualizuj config
+    logger.info(f"Ustawiono batch_size na: {batch_size}")
 
     trainer = pl.Trainer(
         max_epochs=config['training']['max_epochs'],
