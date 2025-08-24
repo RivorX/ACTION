@@ -11,6 +11,7 @@ from scripts.train import train_model
 from scripts.model import build_model, CustomTemporalFusionTransformer
 from scripts.config_manager import ConfigManager
 from scripts.utils.transfer_weights import transfer_weights
+import random
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -23,7 +24,7 @@ def create_directories():
             os.makedirs(directory)
             logger.info(f"Utworzono katalog: {directory}")
 
-async def start_training(regions: str = 'global', years: int = 3, use_optuna: bool = False, continue_training: bool = True, use_transfer_learning: bool = False, old_model_filename: str = None, new_lr: float = None):
+async def start_training(regions: str = 'global', years: int = 3, use_optuna: bool = False, continue_training: bool = True, use_transfer_learning: bool = False, old_model_filename: str = None, new_lr: float = None, ticker_percentage: float = 1.0):
     """Uruchamia proces treningu modelu, w tym pobieranie danych, preprocessing, transfer wag i trening."""
     try:
         create_directories()
@@ -46,18 +47,25 @@ async def start_training(regions: str = 'global', years: int = 3, use_optuna: bo
         # Pobieranie tickerów
         fetcher = DataFetcher(config_manager, years=years)
         all_tickers = []
+        tickers_config = None
+        with open(config['data']['tickers_file'], 'r') as f:
+            tickers_config = yaml.safe_load(f)
+        
         if 'all' in selected_regions:
-            with open(config['data']['tickers_file'], 'r') as f:
-                tickers_config = yaml.safe_load(f)
             for region in tickers_config['tickers']:
-                all_tickers.extend([item['ticker'] for item in tickers_config['tickers'][region]])
+                region_tickers = [item for item in tickers_config['tickers'][region]]
+                num_to_select = max(1, int(len(region_tickers) * ticker_percentage))
+                selected = random.sample(region_tickers, num_to_select)
+                all_tickers.extend(selected)
         else:
             for region in selected_regions:
-                tickers = fetcher._load_tickers(region)
-                all_tickers.extend(tickers)
+                region_tickers = [item for item in tickers_config['tickers'][region]]
+                num_to_select = max(1, int(len(region_tickers) * ticker_percentage))
+                selected = random.sample(region_tickers, num_to_select)
+                all_tickers.extend(selected)
         
         all_tickers = list(dict.fromkeys(all_tickers))  # Usunięcie duplikatów
-        logger.info(f"Wybrane tickery: {all_tickers}")
+        logger.info(f"Wybrane tickery (używając {ticker_percentage*100}%): {all_tickers}")
         config['data']['tickers'] = all_tickers
 
         # Pobieranie danych
@@ -143,6 +151,16 @@ if __name__ == "__main__":
     # Pobieranie danych od użytkownika na początku
     regions = input(f"Wybierz region(y) ({', '.join(['poland', 'europe', 'usa', 'global', 'all'])}, oddziel przecinkami, np. poland,europe) [domyślnie: global]: ").lower() or 'global'
     
+    ticker_percentage_input = input("Podaj procent tickerów do użycia (30-100) [domyślnie: 100]: ").lower() or '100'
+    try:
+        ticker_percentage = float(ticker_percentage_input) / 100
+        if ticker_percentage < 0.3 or ticker_percentage > 1.0:
+            logger.warning(f"Podano {ticker_percentage*100}%. Wartość musi być między 30-100%. Używam domyślnej wartości 100%.")
+            ticker_percentage = 1.0
+    except ValueError as e:
+        logger.error(f"Błąd: {e}. Używam domyślnej wartości 100%.")
+        ticker_percentage = 1.0
+    
     years_input = input("Podaj liczbę lat danych historycznych [minimum: 3, domyślnie: 3]: ").lower() or '3'
     try:
         years = int(years_input)
@@ -182,5 +200,5 @@ if __name__ == "__main__":
                 logger.error("Nie podano nazwy pliku starego modelu.")
                 raise ValueError("Nazwa pliku starego modelu nie może być pusta.")
 
-    # Uruchomienie treningu z nowym parametrem custom_lr
-    asyncio.run(start_training(regions, years, use_optuna, continue_training, use_transfer_learning, old_model_filename, new_lr=custom_lr))
+    # Uruchomienie treningu z nowym parametrem custom_lr i ticker_percentage
+    asyncio.run(start_training(regions, years, use_optuna, continue_training, use_transfer_learning, old_model_filename, new_lr=custom_lr, ticker_percentage=ticker_percentage))

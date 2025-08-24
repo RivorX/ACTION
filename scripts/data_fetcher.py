@@ -144,7 +144,7 @@ class DataFetcher:
 
     async def fetch_global_stocks(self, region: str = None) -> pd.DataFrame:
         """
-        Pobiera dane giełdowe dla wszystkich tickerów z wybranego regionu.
+        Pobiera dane giełdowe dla wszystkich tickerów z wybranego regionu lub z listy w configu.
 
         Args:
             region (str, optional): Region, dla którego pobierane są dane. Jeśli None, używa tickerów z configu.
@@ -154,9 +154,16 @@ class DataFetcher:
         """
         end_date = datetime.now()
         start_date = end_date - timedelta(days=self.years * 365)
-        tickers = self._load_tickers(region)
-        all_data = []
+        # Sprawdź, czy w configu jest lista tickerów
+        tickers = self.config.get('data', {}).get('tickers', None)
+        if tickers is None:
+            # Jeśli brak tickerów w configu, użyj metody _load_tickers
+            tickers = self._load_tickers(region)
+            logger.info(f"Brak listy tickerów w configu, wczytano tickery dla regionu {region}: {tickers}")
+        else:
+            logger.info(f"Używanie tickerów z configu: {tickers}")
 
+        all_data = []
         async with aiohttp.ClientSession() as session:
             tasks = [self.fetch_stock_data(ticker, start_date, end_date, session) for ticker in tickers]
             results = await asyncio.gather(*tasks, return_exceptions=True)
