@@ -81,7 +81,8 @@ class CustomTemporalFusionTransformer(LightningModule):
         """Inicjalizuje TemporalFusionTransformer z filtrowanymi parametrami."""
         filtered_params = self.model_config.get_filtered_params(self.hyperparams)
         logger.info(f"Parametry przekazywane do TemporalFusionTransformer: {filtered_params}")
-        self.model = TemporalFusionTransformer.from_dataset(dataset, **filtered_params)
+        # użyj podklasy z nadpisanym transfer_batch_to_device
+        self.model = TFTWithTransfer.from_dataset(dataset, **filtered_params)
 
     def _save_hyperparameters(self):
         """Zapisuje hiperparametry, ignorując 'loss' i dodając informacje o quantile."""
@@ -100,34 +101,19 @@ class CustomTemporalFusionTransformer(LightningModule):
         return output
 
     def predict(self, data, **kwargs):
-        """Deleguje predykcję do wewnętrznego modelu z optymalizacją transferu na GPU."""
+        """Deleguje predykcję do wewnętrznego modelu. Nie opakowujemy DataLoadera — Lightning przeniesie batch."""
         start_time = time.time()
         self.eval()
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         logger.info(f"Uruchamianie predykcji na urządzeniu: {device}")
-        
+
+        # Nie opakowujemy DataLoadera — przekażemy go bezpośrednio
         if isinstance(data, torch.utils.data.DataLoader):
-            class GPUDataLoader:
-                def __init__(self, original_loader, target_device):
-                    self.original_loader = original_loader
-                    self.target_device = target_device
-                    self.dataset = original_loader.dataset
-                    self.batch_size = original_loader.batch_size
-                
-                def __iter__(self):
-                    for batch in self.original_loader:
-                        batch_gpu = move_to_device(batch, self.target_device)
-                        yield batch_gpu
-                
-                def __len__(self):
-                    return len(self.original_loader)
-            
-            gpu_dataloader = GPUDataLoader(data, device)
-            predictions = self.model.predict(gpu_dataloader, **kwargs)
+            predictions = self.model.predict(data, **kwargs)
         else:
             data_gpu = move_to_device(data, device)
             predictions = self.model.predict(data_gpu, **kwargs)
-        
+
         prediction_duration = time.time() - start_time
         logger.info(f"Kształt zwracanych predykcji: {predictions.output.shape}")
         logger.info(f"Czas predykcji w metodzie predict: {prediction_duration:.3f} sekundy")
@@ -298,6 +284,11 @@ class CustomTemporalFusionTransformer(LightningModule):
         Metoda wymagana przez PyTorch Lightning do walidacji.
         """
         return self._shared_step(batch, batch_idx, stage='val')
+
+# dodaj subclass, która użyje Twojej funkcji move_to_device
+class TFTWithTransfer(TemporalFusionTransformer):
+    def transfer_batch_to_device(self, batch, device, dataloader_idx=0):
+        return move_to_device(batch, device)
 
 def build_model(dataset, config: Dict[str, Any], trial=None, hyperparams: Optional[Dict[str, Any]] = None) -> CustomTemporalFusionTransformer:
     """Buduje model z odpowiednimi hiperparametrami."""
