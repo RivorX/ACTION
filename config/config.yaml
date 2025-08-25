@@ -2,7 +2,7 @@
 # Zawiera wszystkie ustawienia dla modelu, treningu, predykcji, danych i walidacji
 
 # Nazwa modelu
-model_name: Gen6_1
+model_name: Gen7
 
 # Ustawienia modelu
 model:
@@ -20,7 +20,9 @@ model:
 
   # Rozmiary embeddingów dla zmiennych kategorycznych
   embedding_sizes:
-    Sector: [12, 6]
+    Sector: [12, 6]                   # 12 unikalnych wartości, rozmiar embeddingu 6
+    Market_Cap_Category: [4, 2]       # 4 kategorie: Small, Mid, Large, Unknown
+    Dividend_Yield_Category: [4, 2]   # 4 kategorie: None, Low, Medium, High
     Day_of_Week: [7, 4]
     Month: [12, 6]
 
@@ -58,8 +60,8 @@ model:
 training:
   max_epochs: 100               # Maksymalna liczba epok
   optuna_trials: 5              # Liczba prób dla optymalizacji hiperparametrów
-  num_workers: 10                # Liczba workerów dla DataLoadera
-  prefetch_factor: 2             # Czynnik prefetch dla DataLoadera
+  num_workers: 10               # Liczba workerów dla DataLoadera
+  prefetch_factor: 2            # Czynnik prefetch dla DataLoadera
   early_stopping_patience: 10   # Cierpliwość dla wczesnego zatrzymania
 
   reduce_lr_patience: 3         # Cierpliwość dla redukcji współczynnika uczenia

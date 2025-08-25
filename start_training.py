@@ -65,7 +65,6 @@ async def start_training(regions: str = 'global', years: int = 3, use_optuna: bo
                 all_tickers.extend(selected)
         
         all_tickers = list(dict.fromkeys(all_tickers))  # Usunięcie duplikatów
-        logger.info(f"Wybrane tickery (używając {ticker_percentage*100}%): {all_tickers}")
         config['data']['tickers'] = all_tickers
 
         # Pobieranie danych

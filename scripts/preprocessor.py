@@ -61,7 +61,8 @@ class DataPreprocessor:
         """Przetwarza dane dla trybu treningu lub predykcji."""
         numeric_features = [
             "Close", "Volume", "MA10", "MA50", "RSI", "MACD", "ROC", "VWAP",
-            "Momentum_20d", "Close_to_MA_ratio", "Close_to_BB_upper", "Relative_Returns"
+            "Momentum_20d", "Close_to_MA_ratio", "Close_to_BB_upper", "Relative_Returns",
+            "ADX", "CCI", "Aroon_Up", "Aroon_Down", "Parabolic_SAR", "DMI_plus", "DMI_minus", "Up_Days_30d"
         ]
 
         if mode == 'train':
@@ -164,7 +165,7 @@ class DataPreprocessor:
             logger.info(f"Przetworzony val DataFrame zapisany do: {self.val_processed_df_path}")
 
             targets = ["Relative_Returns"]
-            valid_categorical_features = ['Day_of_Week', 'Month']
+            valid_categorical_features = ['Day_of_Week', 'Month', 'Market_Cap_Category', 'Dividend_Yield_Category']
             
             logger.info(f"Finalna lista cech numerycznych ({len(valid_numeric_features)}): {valid_numeric_features}")
             logger.info(f"Finalna lista cech kategorycznych ({len(valid_categorical_features)}): {valid_categorical_features}")
@@ -178,7 +179,7 @@ class DataPreprocessor:
                 min_encoder_length=self.config['model']['min_encoder_length'],
                 max_encoder_length=self.config['model']['max_encoder_length'],
                 max_prediction_length=self.config['model']['max_prediction_length'],
-                static_categoricals=["Sector"],
+                static_categoricals=["Sector", "Market_Cap_Category", "Dividend_Yield_Category"],
                 time_varying_known_categoricals=valid_categorical_features,
                 time_varying_unknown_reals=valid_numeric_features,
                 target_normalizer=normalizers.get("Relative_Returns", TorchNormalizer()),
@@ -186,6 +187,8 @@ class DataPreprocessor:
                 add_encoder_length=False,
                 categorical_encoders={
                     'Sector': NaNLabelEncoder(add_nan=False),
+                    'Market_Cap_Category': NaNLabelEncoder(add_nan=False),
+                    'Dividend_Yield_Category': NaNLabelEncoder(add_nan=False),
                     'Day_of_Week': NaNLabelEncoder(add_nan=False),
                     'Month': NaNLabelEncoder(add_nan=False)
                 }
@@ -200,7 +203,7 @@ class DataPreprocessor:
                 min_encoder_length=self.config['model']['min_encoder_length'],
                 max_encoder_length=self.config['model']['max_encoder_length'],
                 max_prediction_length=self.config['model']['max_prediction_length'],
-                static_categoricals=["Sector"],
+                static_categoricals=["Sector", "Market_Cap_Category", "Dividend_Yield_Category"],
                 time_varying_known_categoricals=valid_categorical_features,
                 time_varying_unknown_reals=valid_numeric_features,
                 target_normalizer=normalizers.get("Relative_Returns", TorchNormalizer()),
@@ -208,6 +211,8 @@ class DataPreprocessor:
                 add_encoder_length=False,
                 categorical_encoders={
                     'Sector': NaNLabelEncoder(add_nan=False),
+                    'Market_Cap_Category': NaNLabelEncoder(add_nan=False),
+                    'Dividend_Yield_Category': NaNLabelEncoder(add_nan=False),
                     'Day_of_Week': NaNLabelEncoder(add_nan=False),
                     'Month': NaNLabelEncoder(add_nan=False)
                 }
@@ -228,7 +233,7 @@ class DataPreprocessor:
                     except Exception as e:
                         logger.error(f"Błąd podczas transformacji cechy {feature}: {e}")
 
-            categorical_columns = ['Day_of_Week', 'Month']
+            categorical_columns = ['Day_of_Week', 'Month', 'Market_Cap_Category', 'Dividend_Yield_Category']
             for cat_col in categorical_columns:
                 if cat_col in df.columns:
                     df[cat_col] = df[cat_col].astype(str)
