@@ -165,8 +165,8 @@ class DataPreprocessor:
             logger.info(f"Przetworzony val DataFrame zapisany do: {self.val_processed_df_path}")
 
             targets = ["Relative_Returns"]
-            valid_categorical_features = ['Day_of_Week', 'Month', 'Market_Cap_Category', 'Dividend_Yield_Category']
-            
+            valid_categorical_features = ['Day_of_Week', 'Month'] # Zmienne kategoryczne zmienające się w czasie
+
             logger.info(f"Finalna lista cech numerycznych ({len(valid_numeric_features)}): {valid_numeric_features}")
             logger.info(f"Finalna lista cech kategorycznych ({len(valid_categorical_features)}): {valid_categorical_features}")
 
