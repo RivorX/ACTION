@@ -57,13 +57,18 @@ model:
 # Ustawienia treningu
 training:
   max_epochs: 100               # Maksymalna liczba epok
-  batch_size: 256               # Rozmiar partii dla treningu
-  num_workers: 6                 # Liczba workerów dla DataLoadera
-  early_stopping_patience: 10   # Cierpliwość dla wczesnego zatrzymania
   optuna_trials: 5              # Liczba prób dla optymalizacji hiperparametrów
+  num_workers: 10                # Liczba workerów dla DataLoadera
+  prefetch_factor: 2             # Czynnik prefetch dla DataLoadera
+  early_stopping_patience: 10   # Cierpliwość dla wczesnego zatrzymania
+
   reduce_lr_patience: 3         # Cierpliwość dla redukcji współczynnika uczenia
   reduce_lr_factor: 0.6         # Czynnik redukcji współczynnika uczenia
   weight_decay: 0.13            # Współczynnik decay dla wag
+
+  batch_size: 256               # Rozmiar partii dla treningu
+  auto_batch_size: true         # Włączenie automatycznej estymacji batch size (true/false)
+  max_vram_usage: 0.8           # Maksymalny procent użycia VRAM (0.0-1.0, np. 0.8 dla 80%)
 
 
 # Ustawienia predykcji
@@ -73,6 +78,7 @@ prediction:
 
 # Ustawienia walidacji
 validation:
+  debug: false                      # Włącz tylko do debugowania (wyłącza sanity checks dla prędkości)
   enable_detailed_validation: false  # Czy włączyć szczegółowe logowanie walidacji
   max_validation_batches_to_log: 2   # Maksymalna liczba batchy walidacyjnych do logowania
   save_plots: true                   # Czy zapisywać wykresy walidacyjne

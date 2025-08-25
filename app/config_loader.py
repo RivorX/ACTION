@@ -5,38 +5,38 @@ from scripts.config_manager import ConfigManager
 logger = logging.getLogger(__name__)
 
 def load_config():
-    """Loads configuration from YAML file using Singleton."""
+    """Wczytuje konfigurację z pliku YAML za pomocą Singleton."""
     return ConfigManager().config
 
 def load_tickers_and_names(config):
-    """Ładuje tickery i nazwy spółek z pliku YAML."""
+    """Wczytuje tickery i nazwy spółek z pliku YAML."""
     try:
         with open(config['data']['tickers_file'], 'r') as f:
             tickers_config = yaml.safe_load(f)
         ticker_dict = {}
         for region in tickers_config['tickers']:
-            for item in tickers_config['tickers'][region]:
-                ticker_dict[item['ticker']] = item['name']
+            for ticker, name in tickers_config['tickers'][region].items():
+                ticker_dict[ticker] = name
         return ticker_dict
     except Exception as e:
         logger.error(f"Błąd wczytywania tickerów i nazw: {e}")
         return {}
 
 def load_benchmark_tickers(config):
-    """Loads benchmark tickers from configuration file."""
+    """Wczytuje tickery benchmarkowe z pliku konfiguracyjnego."""
     try:
         benchmark_tickers_file = config['data']['benchmark_tickers_file']
         with open(benchmark_tickers_file, 'r') as f:
             tickers_config = yaml.safe_load(f)
             all_tickers = []
             for region in tickers_config['tickers'].values():
-                all_tickers.extend(region)
-            return list(dict.fromkeys(all_tickers))
+                all_tickers.extend(list(region.keys()))  # Użyj kluczy (tickery) zamiast wartości
+            return list(dict.fromkeys(all_tickers))  # Usuń duplikaty
     except KeyError as e:
-        logger.error(f"Missing key in config: {e}")
-        raise ValueError(f"Configuration error: missing key {e} in config.yaml")
+        logger.error(f"Brak klucza w konfiguracji: {e}")
+        raise ValueError(f"Błąd konfiguracji: brak klucza {e} w config.yaml")
     except Exception as e:
-        logger.error(f"Error loading benchmark_tickers.yaml: {e}")
+        logger.error(f"Błąd wczytywania benchmark_tickers.yaml: {e}")
         raise
 
 def save_history_range(config, history_range_days):

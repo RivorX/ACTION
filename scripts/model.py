@@ -26,6 +26,9 @@ logger = logging.getLogger(__name__)
 # Ustaw precyzję dla Tensor Cores na GPU
 torch.set_float32_matmul_precision('medium')
 
+# Dodana optymalizacja: Włącz TF32 dla szybszych matmul w mixed precision
+torch.backends.cuda.matmul.allow_tf32 = True
+
 def move_to_device(obj: Any, device: torch.device) -> Any:
     """Rekurencyjnie przenosi tensory na wskazane urządzenie asynchronicznie z non_blocking=True."""
     if isinstance(obj, torch.Tensor):
@@ -57,12 +60,13 @@ class CustomTemporalFusionTransformer(LightningModule):
         self._initialize_model(dataset)
         self._save_hyperparameters()
         self.val_batch_count = 0
-        self.enable_detailed_validation = config['validation']['enable_detailed_validation']
+        self.enable_detailed_validation = config['validation']['enable_detailed_validation'] 
         self.max_val_batches_to_log = config['validation']['max_validation_batches_to_log']
-        self.save_plots = config['validation']['save_plots']  # Pobieranie przełącznika zapisu wykresów
-        self.max_plots_per_epoch = config['validation']['max_plots_per_epoch']  # Maksymalna liczba wykresów na epokę
-        self.logs_dir = config['paths']['logs_dir']  # Ścieżka do katalogu logów
-        self.plot_count = 0  # Licznik wykresów w danej epoce
+        self.save_plots = config['validation']['save_plots']  
+        self.max_plots_per_epoch = config['validation']['max_plots_per_epoch']
+        self.logs_dir = config['paths']['logs_dir']
+        self.plot_count = 0
+        self.debug = config['validation']['debug']
 
     def _load_normalizers(self):
         """Wczytuje normalizery za pomocą ConfigManager."""
@@ -77,7 +81,8 @@ class CustomTemporalFusionTransformer(LightningModule):
         """Inicjalizuje TemporalFusionTransformer z filtrowanymi parametrami."""
         filtered_params = self.model_config.get_filtered_params(self.hyperparams)
         logger.info(f"Parametry przekazywane do TemporalFusionTransformer: {filtered_params}")
-        self.model = TemporalFusionTransformer.from_dataset(dataset, **filtered_params)
+        # użyj podklasy z nadpisanym transfer_batch_to_device
+        self.model = TFTWithTransfer.from_dataset(dataset, **filtered_params)
 
     def _save_hyperparameters(self):
         """Zapisuje hiperparametry, ignorując 'loss' i dodając informacje o quantile."""
@@ -96,34 +101,19 @@ class CustomTemporalFusionTransformer(LightningModule):
         return output
 
     def predict(self, data, **kwargs):
-        """Deleguje predykcję do wewnętrznego modelu z optymalizacją transferu na GPU."""
+        """Deleguje predykcję do wewnętrznego modelu. Nie opakowujemy DataLoadera — Lightning przeniesie batch."""
         start_time = time.time()
         self.eval()
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         logger.info(f"Uruchamianie predykcji na urządzeniu: {device}")
-        
+
+        # Nie opakowujemy DataLoadera — przekażemy go bezpośrednio
         if isinstance(data, torch.utils.data.DataLoader):
-            class GPUDataLoader:
-                def __init__(self, original_loader, target_device):
-                    self.original_loader = original_loader
-                    self.target_device = target_device
-                    self.dataset = original_loader.dataset
-                    self.batch_size = original_loader.batch_size
-                
-                def __iter__(self):
-                    for batch in self.original_loader:
-                        batch_gpu = move_to_device(batch, self.target_device)
-                        yield batch_gpu
-                
-                def __len__(self):
-                    return len(self.original_loader)
-            
-            gpu_dataloader = GPUDataLoader(data, device)
-            predictions = self.model.predict(gpu_dataloader, **kwargs)
+            predictions = self.model.predict(data, **kwargs)
         else:
             data_gpu = move_to_device(data, device)
             predictions = self.model.predict(data_gpu, **kwargs)
-        
+
         prediction_duration = time.time() - start_time
         logger.info(f"Kształt zwracanych predykcji: {predictions.output.shape}")
         logger.info(f"Czas predykcji w metodzie predict: {prediction_duration:.3f} sekundy")
@@ -165,17 +155,19 @@ class CustomTemporalFusionTransformer(LightningModule):
         if stage == 'train' and not y_target.requires_grad:
             y_target.requires_grad_(True)
         
-        if torch.isnan(y_target).any() or torch.isinf(y_target).any():
-            logger.warning(f"NaN/Inf w y_target w batch {batch_idx}")
-            y_target = torch.nan_to_num(y_target, nan=0.0, posinf=0.0, neginf=0.0)
+        if self.debug:
+            if torch.isnan(y_target).any() or torch.isinf(y_target).any():
+                logger.warning(f"NaN/Inf w y_target w batch {batch_idx}")
+                y_target = torch.nan_to_num(y_target, nan=0.0, posinf=0.0, neginf=0.0)
         
         try:
             with torch.amp.autocast(device_type='cuda' if torch.cuda.is_available() else 'cpu', dtype=torch.bfloat16):
                 y_hat = self(x)
-                
-                if torch.isnan(y_hat).any() or torch.isinf(y_hat).any():
-                    logger.warning(f"NaN/Inf w y_hat w batch {batch_idx}")
-                    y_hat = torch.nan_to_num(y_hat, nan=0.0, posinf=0.0, neginf=0.0)
+
+                if self.debug:
+                    if torch.isnan(y_hat).any() or torch.isinf(y_hat).any():
+                        logger.warning(f"NaN/Inf w y_hat w batch {batch_idx}")
+                        y_hat = torch.nan_to_num(y_hat, nan=0.0, posinf=0.0, neginf=0.0)
                 
                 # Obliczanie straty
                 loss = self.model.loss(y_hat, y_target)
@@ -292,6 +284,11 @@ class CustomTemporalFusionTransformer(LightningModule):
         Metoda wymagana przez PyTorch Lightning do walidacji.
         """
         return self._shared_step(batch, batch_idx, stage='val')
+
+# dodaj subclass, która użyje Twojej funkcji move_to_device
+class TFTWithTransfer(TemporalFusionTransformer):
+    def transfer_batch_to_device(self, batch, device, dataloader_idx=0):
+        return move_to_device(batch, device)
 
 def build_model(dataset, config: Dict[str, Any], trial=None, hyperparams: Optional[Dict[str, Any]] = None) -> CustomTemporalFusionTransformer:
     """Buduje model z odpowiednimi hiperparametrami."""

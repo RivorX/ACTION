@@ -7,8 +7,9 @@ from pytorch_forecasting import TimeSeriesDataSet, NaNLabelEncoder
 import pytorch_forecasting
 from scripts.data_fetcher import DataFetcher
 from scripts.preprocessor import DataPreprocessor
-from scripts.model import build_model, CustomTemporalFusionTransformer
+from scripts.model import build_model
 from scripts.config_manager import ConfigManager
+from scripts.utils.batch_size_estimator import estimate_batch_size
 import optuna
 import pandas as pd
 import numpy as np
@@ -48,9 +49,16 @@ class CustomModelCheckpoint(pl.callbacks.Callback):
             torch.save(checkpoint, self.save_path)
 
 def objective(trial, train_dataset: TimeSeriesDataSet, val_dataset: TimeSeriesDataSet, config: dict):
-    model = build_model(train_dataset, config, trial)  # Używamy train_dataset
+    model = build_model(train_dataset, config, trial)
+    
+    # Estymacja batch size
+    batch_size = estimate_batch_size(model, train_dataset, config)
+    config['training']['batch_size'] = batch_size
+    logger.info(f"Ustawiono batch_size w objective na: {batch_size}")
+
     num_workers = config['training']['num_workers']
     pin_memory = torch.cuda.is_available()
+    prefetch_factor = config['training']['prefetch_factor']
     trainer = pl.Trainer(
         max_epochs=config['training']['max_epochs'],
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
@@ -65,7 +73,7 @@ def objective(trial, train_dataset: TimeSeriesDataSet, val_dataset: TimeSeriesDa
     )
     val_dataloader = val_dataset.to_dataloader(
         train=False, batch_size=config['training']['batch_size'], num_workers=num_workers,
-        persistent_workers=True, pin_memory=pin_memory
+        persistent_workers=True, pin_memory=pin_memory, prefetch_factor=prefetch_factor
     )
     for batch in val_dataloader:
         x, y = batch
@@ -76,7 +84,7 @@ def objective(trial, train_dataset: TimeSeriesDataSet, val_dataset: TimeSeriesDa
         break
     trainer.fit(model, train_dataloaders=train_dataset.to_dataloader(
         train=True, batch_size=config['training']['batch_size'], num_workers=num_workers,
-        persistent_workers=True, pin_memory=pin_memory
+        persistent_workers=True, pin_memory=pin_memory, prefetch_factor=prefetch_factor
     ), val_dataloaders=val_dataloader)
     return trainer.callback_metrics["val_loss"].item()
 
@@ -87,14 +95,14 @@ def train_model(dataset: tuple, config: dict, use_optuna: bool = True, continue_
     train_dataset, val_dataset = dataset
     
     # Ładuj przetworzone train_df i val_df
-    train_processed_df_path = Path(config['data']['train_processed_df_path'])
-    val_processed_df_path = Path(config['data']['val_processed_df_path'])
+    train_processed_df_path = Path(config['data']['train_processed_df_path']).with_suffix('.parquet')
+    val_processed_df_path = Path(config['data']['val_processed_df_path']).with_suffix('.parquet')
     
     if not train_processed_df_path.exists() or not val_processed_df_path.exists():
         raise FileNotFoundError(f"Przetworzone DataFrame train/val nie istnieją w {train_processed_df_path} lub {val_processed_df_path}")
     
-    train_df = pd.read_pickle(train_processed_df_path)
-    val_df = pd.read_pickle(val_processed_df_path)
+    train_df = pd.read_parquet(train_processed_df_path).copy()
+    val_df = pd.read_parquet(val_processed_df_path).copy()
     
     logger.info(f"Wczytano przetworzony train DataFrame z {train_processed_df_path}, długość: {len(train_df)}")
     logger.info(f"Wczytano przetworzony val DataFrame z {val_processed_df_path}, długość: {len(val_df)}")
@@ -108,10 +116,7 @@ def train_model(dataset: tuple, config: dict, use_optuna: bool = True, continue_
     val_df['Sector'] = pd.Categorical(val_df['Sector'], categories=config['model']['sectors'], ordered=False)
     val_df['Day_of_Week'] = pd.Categorical(val_df['Day_of_Week'], categories=[str(i) for i in range(7)], ordered=False)
     
-    logger.info(f"Kategorie sektorów w train.py: {train_df['Sector'].cat.categories.tolist()}")
-    logger.info(f"Kategorie dni tygodnia w train.py: {train_df['Day_of_Week'].cat.categories.tolist()}")
-    
-    # Filtracja grup z wystarczającą liczbą rekordów (dla train i val osobno, ale łącznie)
+    # Filtracja grup z wystarczającą liczbą rekordów
     min_val_records = config['model'].get('min_prediction_length', 1) + config['model'].get('min_encoder_length', 1)
     df = pd.concat([train_df, val_df])
     group_counts = df.groupby('group_id').size().reset_index(name='count')
@@ -129,7 +134,7 @@ def train_model(dataset: tuple, config: dict, use_optuna: bool = True, continue_
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logger.info(f"Używane urządzenie: {device}")
 
-    # Optymalizacja z Optuna
+    # Optymalizacja z Optuna (ustaw use_optuna=False po pierwszym tuningu dla prędkości)
     if use_optuna and not continue_training:
         study = optuna.create_study(direction="minimize")
         study.optimize(lambda trial: objective(trial, train_dataset, val_dataset, config), n_trials=config['training']['optuna_trials'])
@@ -147,12 +152,11 @@ def train_model(dataset: tuple, config: dict, use_optuna: bool = True, continue_
         checkpoint = torch.load(model_save_path, map_location=torch.device('cpu'), weights_only=False)
         hyperparams = checkpoint["hyperparams"]
         
-        # Nowa logika: zmień lr jeśli podano
         if new_lr is not None:
             hyperparams['learning_rate'] = new_lr
             logger.info(f"Zmieniono learning rate na {new_lr} dla kontynuacji treningu.")
         
-        final_model = build_model(train_dataset, config, hyperparams=hyperparams)  # Używamy train_dataset
+        final_model = build_model(train_dataset, config, hyperparams=hyperparams)
         try:
             final_model.load_state_dict(checkpoint["state_dict"])
             final_model.to(device)
@@ -163,7 +167,12 @@ def train_model(dataset: tuple, config: dict, use_optuna: bool = True, continue_
             raise
     else:
         logger.info("Brak modelu lub kontynuacja wyłączona, trenowanie od zera")
-        final_model = build_model(train_dataset, config, hyperparams=best_params)  # Używamy train_dataset
+        final_model = build_model(train_dataset, config, hyperparams=best_params)
+
+    # Estymacja batch size przed utworzeniem DataLoaderów
+    batch_size = estimate_batch_size(final_model, train_dataset, config)
+    config['training']['batch_size'] = batch_size  # Zaktualizuj config
+    logger.info(f"Ustawiono batch_size na: {batch_size}")
 
     trainer = pl.Trainer(
         max_epochs=config['training']['max_epochs'],
@@ -178,14 +187,17 @@ def train_model(dataset: tuple, config: dict, use_optuna: bool = True, continue_
         logger=CSVLogger(save_dir="logs/")
     )
     num_workers = config['training']['num_workers']
+    prefetch_factor = config['training']['prefetch_factor']
     pin_memory = torch.cuda.is_available()
     trainer.fit(
         model=final_model,
         train_dataloaders=train_dataset.to_dataloader(
-            train=True, batch_size=config['training']['batch_size'], num_workers=num_workers, persistent_workers=True, pin_memory=pin_memory
+            train=True, batch_size=config['training']['batch_size'], num_workers=num_workers,
+            persistent_workers=True, pin_memory=pin_memory, prefetch_factor=prefetch_factor
         ),
         val_dataloaders=val_dataset.to_dataloader(
-            train=False, batch_size=config['training']['batch_size'], num_workers=num_workers, persistent_workers=True, pin_memory=pin_memory
+            train=False, batch_size=config['training']['batch_size'], num_workers=num_workers,
+            persistent_workers=True, pin_memory=pin_memory, prefetch_factor=prefetch_factor
         )
     )
     
