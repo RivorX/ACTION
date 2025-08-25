@@ -181,6 +181,7 @@ class DataPreprocessor:
                 max_prediction_length=self.config['model']['max_prediction_length'],
                 static_categoricals=["Sector", "Market_Cap_Category", "Dividend_Yield_Category"],
                 time_varying_known_categoricals=valid_categorical_features,
+                time_varying_known_reals=[], 
                 time_varying_unknown_reals=valid_numeric_features,
                 target_normalizer=normalizers.get("Relative_Returns", TorchNormalizer()),
                 allow_missing_timesteps=True,
@@ -205,6 +206,7 @@ class DataPreprocessor:
                 max_prediction_length=self.config['model']['max_prediction_length'],
                 static_categoricals=["Sector", "Market_Cap_Category", "Dividend_Yield_Category"],
                 time_varying_known_categoricals=valid_categorical_features,
+                time_varying_known_reals=[], 
                 time_varying_unknown_reals=valid_numeric_features,
                 target_normalizer=normalizers.get("Relative_Returns", TorchNormalizer()),
                 allow_missing_timesteps=True,
@@ -220,6 +222,19 @@ class DataPreprocessor:
             
             train_dataset.save(self.processed_data_path)
             logger.info(f"Kolumny przetworzonego train_df: {train_df.columns.tolist()}")
+            
+            # sprawdź jak dataset widzi role zmiennych
+            params = train_dataset.get_parameters()
+            print("time_varying_known_reals:", params.get("time_varying_known_reals"))
+            print("time_varying_unknown_reals:", params.get("time_varying_unknown_reals"))
+            print("static_reals:", params.get("static_reals"))
+            print("static_categoricals:", params.get("static_categoricals"))
+
+            # sprawdź kolumny dataframe użytego do utworzenia datasetu i przykładowe okno czasowe (ostatnie encoder + decoder)
+            print("columns:", train_df.columns.tolist())
+            g = train_df[train_df["group_id"]==train_df["group_id"].unique()[0]].sort_values("time_idx")
+            print(g.tail( (train_dataset.max_encoder_length + train_dataset.max_prediction_length) + 5 ))
+            
             return train_dataset, val_dataset
 
         elif mode == 'predict':

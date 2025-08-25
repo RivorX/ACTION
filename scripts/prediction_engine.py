@@ -128,19 +128,23 @@ def generate_predictions(config, dataset, model, ticker_data):
     model = model.to(device)
     
     dataset_creation_time = time.time()
-    categorical_columns = ['Day_of_Week', 'Month']
+    # dopasuj kolumny kategoryczne do nowych cech z preprocesora
+    categorical_columns = ['Day_of_Week', 'Month', 'Market_Cap_Category', 'Dividend_Yield_Category', 'Sector']
     for cat_col in categorical_columns:
         if cat_col in ticker_data.columns:
             ticker_data[cat_col] = ticker_data[cat_col].astype(str)
 
+    # Użyj parametrów zapisanych w dataset (pochodzą z preprocessor)
     ticker_dataset = TimeSeriesDataSet.from_parameters(
         dataset.get_parameters(),
         ticker_data,
         predict_mode=True,
         max_prediction_length=config['model']['max_prediction_length'],
-        static_categoricals=["Sector"],
+        # upewnij się, że enkodery zawierają wszystkie statyczne/kategoryczne cechy używane przez preprocessor
         categorical_encoders={
             'Sector': NaNLabelEncoder(add_nan=False),
+            'Market_Cap_Category': NaNLabelEncoder(add_nan=False),
+            'Dividend_Yield_Category': NaNLabelEncoder(add_nan=False),
             'Day_of_Week': NaNLabelEncoder(add_nan=False),
             'Month': NaNLabelEncoder(add_nan=False)
         }
@@ -150,14 +154,15 @@ def generate_predictions(config, dataset, model, ticker_data):
         train=False,
         batch_size=batch_size,
         num_workers=0,
-        pin_memory=True,
+        pin_memory=torch.cuda.is_available(),
         persistent_workers=False
     )
     dataset_creation_duration = time.time() - dataset_creation_time
     logger.info(f"Tworzenie TimeSeriesDataSet i dataloadera zajęło: {dataset_creation_duration:.3f} sekundy")
     
     prediction_time = time.time()
-    with torch.inference_mode(), torch.amp.autocast(device_type='cuda' if torch.cuda.is_available() else 'cpu', dtype=torch.float32):
+    device_type = 'cuda' if torch.cuda.is_available() else 'cpu'
+    with torch.inference_mode(), torch.amp.autocast(device_type=device_type, dtype=torch.float32):
         predictions = model.predict(dataloader, mode="quantiles", return_x=True, trainer_kwargs={'logger': False})
     prediction_duration = time.time() - prediction_time
     logger.info(f"Wykonywanie predykcji zajęło: {prediction_duration:.3f} sekundy")
